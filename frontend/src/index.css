@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply font-sans bg-[#F4F7F5] text-slate-900 antialiased selection:bg-emerald-600 selection:text-white text-base;
+  }
+}
+
+/* Elegant scrollbar matching the green theme */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #EAEFEA;
+}
+::-webkit-scrollbar-thumb {
+  background: #A3C9A8;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #008744;
+}
+
+/* ── Roll number slip: screen preview typography ── */
+#print-root {
+  display: none;
+}
+
+.roll-slip {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #0f172a;
+}
+.roll-slip .slip-kicker {
+  font-size: 11px;
+}
+.roll-slip .slip-university {
+  font-size: 18px;
+}
+.roll-slip .slip-branch {
+  font-size: 9px;
+}
+.roll-slip .slip-title {
+  font-size: 14px;
+}
+.roll-slip .slip-semester {
+  font-size: 11px;
+}
+.roll-slip .slip-section-title {
+  font-size: 10px;
+}
+.roll-slip .slip-info {
+  font-size: 10px;
+}
+.roll-slip .slip-courses {
+  font-size: 9.5px;
+}
+.roll-slip .slip-small {
+  font-size: 8.5px;
+}
+.roll-slip .slip-note {
+  font-size: 9px;
+}
+.roll-slip .slip-footer {
+  font-size: 8.5px;
+}
+
+/* ── Print layout: only the dedicated print root is printed, on one A4 page ── */
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+  }
+
+  #root {
+    display: none !important;
+  }
+
+  #print-root {
+    display: block !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .roll-slip {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 9pt;
+    line-height: 1.3;
+  }
+  .roll-slip .slip-kicker {
+    font-size: 9pt;
+  }
+  .roll-slip .slip-university {
+    font-size: 15pt;
+  }
+  .roll-slip .slip-branch {
+    font-size: 8pt;
+  }
+  .roll-slip .slip-title {
+    font-size: 11pt;
+  }
+  .roll-slip .slip-semester {
+    font-size: 9pt;
+  }
+  .roll-slip .slip-section-title {
+    font-size: 8.5pt;
+  }
+  .roll-slip .slip-info {
+    font-size: 8.5pt;
+  }
+  .roll-slip .slip-courses {
+    font-size: 8pt;
+  }
+  .roll-slip .slip-small {
+    font-size: 7pt;
+  }
+  .roll-slip .slip-note {
+    font-size: 7.5pt;
+  }
+  .roll-slip .slip-footer {
+    font-size: 7pt;
+  }
+
+  .roll-slip table {
+    page-break-inside: avoid;
+  }
+  .roll-slip tr {
+    page-break-inside: avoid;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
