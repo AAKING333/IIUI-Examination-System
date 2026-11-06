@@ -79,6 +79,15 @@ Built with **FastAPI** on the backend and **React + Vite + Tailwind CSS** on the
 
 ---
 
+## Clone the Repository
+
+```bash
+git clone https://github.com/AAKING333/IIUI-Examination-System.git
+cd IIUI-Examination-System
+```
+
+---
+
 ## Quick Start (Fresh Clone)
 
 ### Prerequisites
