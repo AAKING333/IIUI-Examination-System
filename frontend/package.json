@@ -1,0 +1,1 @@
+{"dependencies":{"lucide-react":"^1.69.0","react":"^18.3.1","react-dom":"^18.3.1","react-toastify":"^11.2.0"},"devDependencies":{"@vitejs/plugin-react":"^4.3.1","vite":"^8.3.6"},"name":"exam-portal-frontend","private":true,"scripts":{"build":"vite build","dev":"vite","preview":"vite preview"},"type":"module","version":"1.0.0"}

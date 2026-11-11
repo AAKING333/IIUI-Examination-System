@@ -1,0 +1,86 @@
+/**
+ * IIUI Examinations Admin Portal — Design Tokens
+ *
+ * Official International Islamic University Islamabad web theme:
+ * :root { --iiui-primary: #1a5f2a; --iiui-dark-blue: #192f59; }
+ * Gold accent matching the university emblem and Poppins typeface.
+ */
+
+:root {
+  /* IIUI primary — university green */
+  --iiui-green-50: #eff6f1;
+  --iiui-green-100: #dbecdf;
+  --iiui-green-200: #b7d8c1;
+  --iiui-green-400: #2f8a4a;
+  --iiui-green: #1a5f2a;
+  --iiui-green-700: #154b22;
+  --iiui-green-900: #0c2f16;
+  --iiui-green-bright: #15913b;
+
+  /* IIUI secondary — institutional navy */
+  --iiui-navy-50: #eef1f8;
+  --iiui-navy-100: #dce3f2;
+  --iiui-navy-200: #c3cee5;
+  --iiui-navy: #192f59;
+  --iiui-navy-700: #132444;
+  --iiui-navy-900: #101f3d;
+
+  /* Emblem gold accent */
+  --iiui-gold-50: #faf6ea;
+  --iiui-gold-100: #f5edda;
+  --iiui-gold-400: #dcb74c;
+  --iiui-gold: #c9a227;
+  --iiui-gold-600: #a8861d;
+
+  /* Surfaces */
+  --itms-bg: #f4f6f5;
+  --itms-surface: #ffffff;
+  --itms-surface-muted: #f8faf9;
+  --itms-border: #e3e8e6;
+  --itms-border-strong: #cbd5d1;
+
+  /* Text */
+  --itms-text: #0f172a;
+  --itms-text-secondary: #334155;
+  --itms-text-muted: #64748b;
+  --itms-text-inverse: #ffffff;
+
+  /* Status */
+  --itms-danger: #b91c1c;
+  --itms-danger-bg: #fef2f2;
+  --itms-danger-border: #fecaca;
+  --itms-success: #15803d;
+  --itms-success-bg: #f0fdf4;
+  --itms-success-border: #bbf7d0;
+  --itms-warn: #b45309;
+  --itms-warn-bg: #fffbeb;
+  --itms-warn-border: #fef3c7;
+
+  /* Elevation & radius */
+  --itms-shadow-sm: 0 1px 3px rgba(16, 31, 61, 0.08);
+  --itms-shadow-md: 0 10px 25px -5px rgba(16, 31, 61, 0.12), 0 8px 10px -6px rgba(16, 31, 61, 0.08);
+  --itms-shadow-lg: 0 20px 25px -5px rgba(16, 31, 61, 0.18), 0 8px 10px -6px rgba(16, 31, 61, 0.1);
+  --itms-radius-sm: 6px;
+  --itms-radius-md: 10px;
+  --itms-radius-lg: 14px;
+  --itms-radius-pill: 9999px;
+
+  /* Motion */
+  --itms-transition: 160ms cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Typography */
+  --itms-font: 'Poppins', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--itms-font);
+  background-color: var(--itms-bg);
+  color: var(--itms-text);
+  -webkit-font-smoothing: antialiased;
+}
+

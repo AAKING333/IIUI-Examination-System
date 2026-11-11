@@ -1,0 +1,29 @@
+# Python / FastAPI
+backend/venv/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Node / React / Vite
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+*.local
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Logs & OS / Editor files
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
