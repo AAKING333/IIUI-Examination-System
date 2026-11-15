@@ -19,21 +19,23 @@ Checked per individual `(roll_no, course_code)` enrolment via `enrolment_type` (
 - Extracted via `get_course_teachers` (reading `instructors`, `sections[].instructor`, or `instructor`, and ignoring placeholders `"unassigned"`, `"tbd"`, `"n/a"`, `"none"`).
 - **One Slot Per Teacher:** An instructor cannot be scheduled for multiple courses in the same `slot_id`, regardless of whether the courses belong to different programs, batches, or sections.
 
-### 1.3 Course Eligibility & Ordering
+### 1.3 Unified Course Co-Scheduling (Same Slot for All Batches & Sections)
+- **Simultaneous Examination for All Cohorts:** If a written theory course (e.g., Operating Systems `CS342`, OOP `CS212`, MAD `IT332`) is taken by multiple degree programs (BSCS, BSIT), batches, or sections, all enrolled students and sections are scheduled in the **exact same time slot (`slot_id`)**.
+- **No Split Paper Sessions:** A course never has its sections/batches scattered across different time slots or dates.
+- **Cross-Program Column Alternation in Halls:** For large multi-program courses exceeding single-course half-capacity (> 145 students across BSCS and BSIT), seating plans split the course into program-level cohorts (e.g., `CS212-CS` and `CS212-IT`) that alternate columns in the halls, ensuring 100% capacity utilization without adjacent student paper sharing.
+- **Teacher Co-Scheduling Allowance:** An instructor teaching multiple sections of the *same* course (e.g. Dr. Asim Munir for Sec A and Sec B of `CS342`) is permitted to have all those sections in the same slot. Clashes strictly prevent an instructor from having two *different* courses in the same slot.
+
+### 1.4 Course Eligibility & Ordering
 - **Zero-Enrolment Exclusion:** Courses with `0` enrolled students (`len(student_roll_numbers) == 0`) are excluded from the generated datesheet.
-- **Greedy Priority Ordering:** Eligible courses are sorted by enrolled student count descending (`largest first`), and available time slots are processed chronologically by `(date, start_time)`.
+- **Conflict-Degree Priority Ordering:** Course/section units are sorted by potential clashes (shared students, instructor, or course code), then by enrolled student count descending. Available time slots are processed chronologically by `(date, start_time)`.
 
-### 1.4 Slot Capacity & Two-Pass Room Feasibility
-1. **Per-Slot Capacity Ceiling:** Sum of students placed in any slot cannot exceed total physical capacity across all rooms (`sum(room.capacity)`).
-2. **Pass 1 (Preferred 2-Paper Pairing + Buffer Check):**
-   - Limits each slot to `max_courses_per_slot = 2`.
-   - Verifies `courses_fit_in_rooms(slot_courses + [course], active_rooms, require_empty_buffer=True)` so placed courses satisfy alternating column seating, clean teacher columns, and `>= 5` empty buffer chairs.
-3. **Pass 2 (Capacity Fallback):**
-   - Retries any remaining unplaced courses without the `max_courses_per_slot` cap across chronological slots in two sub-passes:
-     - First requiring `require_empty_buffer=True`
-     - Then falling back to `require_empty_buffer=False` (clean teacher columns without requiring the full 5-chair trailing buffer).
+### 1.5 Slot Capacity & Hall vs Lab Venue Allocation
+1. **Separation of Venues:** Written examinations are scheduled in examination halls (`room_type != 'lab'`), while practical lab examinations are scheduled in computer labs (`room_type == 'lab'`).
+2. **No Fixed Lab Slots:** Slots are not fixed to `slot_type == 'lab'`. Any time slot can accommodate written exams in halls and lab exams in computer labs simultaneously without mutual exclusion.
+3. **Per-Venue Capacity Ceilings:** Written papers in a slot must not exceed total hall capacity (`sum(hall.capacity)`), and lab papers in a slot must not exceed total lab capacity (`sum(lab.capacity)`).
+4. **Pass 1 & Pass 2 Scheduling:** Evenly places courses across slots ensuring alternating column feasibility, teacher clash prevention, and student day/slot bounds.
 
-### 1.5 Atomic Generation Gate (API)
+### 1.6 Atomic Generation Gate (API)
 - `POST /api/datesheet/generate` rejects generation with **HTTP 400** if no time slots or no courses exist.
 - If **any** schedulable course remains unplaced (`unplaced` non-empty), the endpoint aborts with **HTTP 422** and does **not** save or expose a partial datesheet.
 
@@ -44,32 +46,22 @@ Checked per individual `(roll_no, course_code)` enrolment via `enrolment_type` (
 Implemented in `backend/seating.py` (`build_seating_plan`, `courses_fit_in_rooms`, `build_seating_sheet`).
 
 ### 2.1 Strict 2-Paper Column Alternation & Adjacency Rules
-1. **Max 2 Papers Per Room:** Courses in a slot are sorted by demand (`len(rolls) + EXTRA_EMPTY_CHAIRS * len(groups)`) and partitioned into groups of at most `2` papers (`_partition_course_pairs`).
+1. **Max 2 Papers Per Room:** Courses in a slot are sorted by student count and partitioned into pairs. In any examination room, at most 2 examination papers are seated together in alternating columns.
 2. **Column Alternation (`column_papers`):**
    - **2 Papers in Room:** Columns strictly alternate `Paper 0` (Col 01, 03, 05...) and `Paper 1` (Col 02, 04, 06...).
    - **1 Paper in Room:** Occupied columns occupy even 0-based indices (`0, 2, 4...` -> Col 01, 03, 05...) separated by `— (Vacant)` columns (`1, 3, 5...` -> Col 02, 04, 06...).
-3. **No Side-by-Side Same Course:** Horizontally adjacent seats (`grid[r][c]` and `grid[r][c + 1]`) never hold the same `course_code`, verified by `check_adjacent_columns` (`adjacent_rule_pass`).
+3. **Anti-Cheating Adjacency Rule (Different Course or Different Instructor):** Horizontally adjacent seats (`grid[r][c]` and `grid[r][c + 1]`) must **NEVER** share both the same `course_code` and the same `instructor` (`check_adjacent_columns`). At least one attribute must differ (`course_1 != course_2` OR `instructor_1 != instructor_2`). If both course and instructor are identical (same exam question paper), the columns must never sit side-by-side and must alternate with `— (Vacant)` buffer columns to completely eliminate side-by-side cheating.
 4. **Top-to-Bottom Column Fill:** Within every column, roll numbers read vertically from front (`Row 1`) to back (`Row R`).
 
 ### 2.2 `(Course, Teacher)` Contiguous Grouping & Clean Columns
-1. **Per-Student Teacher Resolution (`_resolve_student_teacher` & `DataStore.get_instructor_for_student_course`):** Resolves each enrolled student's instructor using 5-step precedence:
-   1. Exact `(program, batch, section)` match
-   2. `(program, batch)` match
-   3. `program` match (covers back-paper students from earlier cohorts)
-   4. First assigned instructor for that course
-   5. Normalized course-level `instructor` fallback (excluding placeholders `_PLACEHOLDER_TEACHERS = {"unassigned", "none", "tbd", "n/a", ""}`).
-2. **Same-Teacher Merging (`_course_teacher_groups`):** Students in the same course taught by the **same teacher** across different sections, batches, or programs are grouped into one contiguous block (ordered by descending group size, first roll number, then teacher name). Students taught by **different teachers** in a multi-teacher course remain separate groups.
-3. **Clean Column Boundaries (`_allocate_paper_columns`):** Each `(course, teacher)` group begins at the top (`Row 1`) of a new column; different teachers of the same course never share a column unless emergency fallback (`allow_mix_teachers=True`) is triggered.
+1. **Per-Student Teacher Resolution (`_resolve_student_teacher` & `DataStore.get_instructor_for_student_course`):** Resolves each enrolled student's instructor using exact `(program, batch, section)` match from the timetable.
+2. **Same-Teacher Merging (`_course_teacher_groups`):** Students in the same course taught by the **same teacher** across different sections or batches are grouped into one contiguous block.
+3. **Clean Column Boundaries:** Each `(course, teacher)` group begins at the top (`Row 1`) of a new column; different teachers of the same course never share a column.
 
-### 2.3 Extra 5 Empty Chairs Buffer Rule
-1. **Minimum 5 Trailing Empty Seats (`EXTRA_EMPTY_CHAIRS = 5`):**
-   - Every `(course, teacher)` block must leave **at least 5 empty chairs** after its final seated student in its allocated alternating columns.
-   - Unused seats at the bottom of the group's final occupied column count first (`rem_in_last`).
-   - If `rem_in_last < 5`, extra empty column(s) belonging to that paper are reserved under the same `Course - Teacher` header until total trailing empty chairs `>= 5` (spanning multiple buffer columns if `room["rows"] < 5`).
-2. **Verification Flag:** `_verify_empty_chairs_rule` checks all `(course, teacher)` sequences in room/column order and reports `empty_chairs_rule_pass` alongside `extra_empty_chairs: 5`.
-3. **Sheet Representation (`build_seating_sheet`):**
-   - Active columns and 0-student buffer columns retain all `room["rows"]` entries (`""` for empty seats) and display `CODE - Teacher` (using `column_teachers` metadata when a buffer column has 0 seated students).
-   - Unused columns outside allocated blocks display `— (Vacant)` with an empty roll list.
+### 2.3 Buffer Optimization & Zero Empty Column Waste
+1. **Natural Trailing Buffers:** When a teacher group finishes, any remaining unused seats at the bottom of the final occupied column (`rem_in_last`) serve as natural trailing buffer chairs.
+2. **No Dummy Buffer Columns:** The system does not consume entire empty columns for buffer, preventing artificial vacant columns labeled with teacher names.
+3. **Vacant Column Display:** Any column without seated students displays `— (Vacant)`. Rooms with 0 seated students are pruned automatically.
 
 ### 2.4 Minimal-Waste Room Selection & Fallbacks
 - `best_fit_rooms` / `_search_best_combo` selects the subset of rooms minimizing `(total_usable_capacity - pair_total, room_count)` via exact subset search (`<= 12` available rooms) or largest-room-first greedy selection (`> 12` rooms).
@@ -84,6 +76,14 @@ Implemented in `backend/seating.py` (`build_seating_plan`, `courses_fit_in_rooms
   - **`LOW`**: `util < 70%`
   - **`FAIR`**: `70% <= util < 85%`
   - **`OK`**: `util >= 85%`
+
+### 2.6 Computer Lab Seating Rules (Lab 2, Lab 3, Lab 4, Lab 5)
+1. **Designated Lab Inventory:** The available computer labs are `Lab 2`, `Lab 3`, `Lab 4`, and `Lab 5` (each 5 rows $\times$ 5 columns, 25 workstations).
+2. **Dedicated Teacher per Lab:** Each computer lab is assigned to exactly **one teacher** and their enrolled students (`har lab ma aik teacher apnay students ka paper la ga`). Different teachers or courses are never mixed in the same lab.
+3. **No Alternating Column Logic:** Alternating column logic (between courses or alternating vacant columns) does **NOT** apply to computer labs (`alternate column for courses wala logic labs ma nhi ha`). Students are seated contiguously column by column (`Col 01`, `Col 02`, `Col 03`...) from front to back.
+4. **Clean Trailing Vacancy:** Once all students under that instructor are seated, any trailing unused columns at the end of the lab are designated `— (Vacant)`.
+5. **Full Usable Capacity:** All workstations in the lab are usable (`usable_capacity = rows * columns = 25`), filling laboratories contiguously column by column.
+6. **Single Invigilator (Course Instructor):** For computer labs, exactly **1 invigilator** is assigned per lab room (`labs ka liye 1 invigilator jo keh course instructor hoga woh kafi ha`). That invigilator is strictly the **course instructor** conducting their lab exam; duty category is marked `own_subject` (exempt from extra duty quotas), and no external faculty are drafted.
 
 ---
 
@@ -106,7 +106,7 @@ Implemented across Pydantic schemas (`backend/main.py`), `DataStore` (`backend/d
 Implemented in `backend/main.py`:
 - **Automatic Seating Cache Clearing:** `seating_cache.clear()` runs after room create/update/delete, course create/update/delete, instructor assignment create/update/delete, student create/update/delete, time-slot auto-generate/clear/bulk-delete/bulk-shift, and datesheet generation so stale hall plans are never served.
 - **Scoped Slot Cache Clearing:** Updating or deleting a single time slot (`PUT`/`DELETE /api/time-slots/{slot_id}`) or recalculating a slot plan (`POST /api/seating-plan/generate`) invalidates that `slot_id` via `seating_cache.pop(slot_id, None)`.
-- **Factory Reset Rule:** `POST /api/reset-data` restores seed data (`4` rooms totaling `180` seats, `26` courses, `59` instructor assignments, `200` students across `BSCS`/`BSIT`/`BSSE` batches `F21..F24`, `28` time slots across `7` exam days), clears `datesheet_state`, and clears `seating_cache`.
+- **Factory Reset Rule:** `POST /api/reset-data` restores reference-date-sheet seed data: `6` examination halls (`270` seats), `4` computer labs (`Lab 2, 3, 4, 5` — `100` workstations), `46` courses (including `SE346` E-Commerce), `142` instructor assignments, and `675` students across BSCS/BSIT batches F23–F26. All students are enrolled according to the Fall 2026 timetable course load. The seed has `24` written/lab time slots across six exam days. Reset also clears published datesheet versions, duties, UMC reports, and the seating cache. SQLite is stored in `backend/exam_portal.sqlite3` by default; set `EXAM_PORTAL_DB` to override the path.
 
 ---
 
@@ -126,8 +126,49 @@ Published in generated JSON roll slips (`backend/main.py`) and PDF roll slips (`
 3. **Reporting Time:** Candidates must be seated in their assigned hall and desk **at least 15 minutes** before the exam commences.
 4. **Provisional Slip & 75% Attendance Rule:** Roll No. Slips are issued provisionally; students with **less than 75% attendance** in any course are ineligible to sit, and any exam taken despite short attendance will be cancelled.
 
-### 5.3 Excel, PDF & Print Rendering Rules
-- **Datesheet Excel (`exports.datesheet_xlsx`):** Groups entries chronologically under date banners (`dd/mm/yyyy - Weekday`), merges `Time`, `Room No.`, and `Total Students per Session` cells across multi-course slots (`k > 1`), displays cleaned instructor names (`_clean_instructor`), and resolves room names from `allocated_rooms` (falling back to slot seating rooms).
+### 5.3 Official Datesheet Reference Layout (Excel, PDF, UI & Print)
+Matches `doc/reference_datesheet.xlsx` structure:
+1. **Institutional Header Block:**
+   - `INTERNATIONAL ISLAMIC UNIVERSITY` (Times New Roman, bold, centered)
+   - `DEPARTMENT OF COMPUTER SCIENCE & INFORMATION TECHNOLOGY` (Times New Roman, bold, centered)
+   - `MIDTERM EXAMS DATESHEET (MALE) - FALL 2026` (Times New Roman, bold, centered)
+   - `Version {version}` (Times New Roman, bold/italic, centered)
+2. **7 Canonical Columns:**
+   - `Date  (Day)`: Formatted time session window (e.g. `08:45 - 10:15`), vertically merged/rowSpanned across all courses in that session.
+   - `Course`: Spaced course code and title (e.g. `IT 332 Mobile Application Development`, `CS 212 Object Oriented Programming`).
+   - `Instructor`: Comma-separated list of course instructors for that slot (cleaned, deduplicated).
+   - `Batch(es)`: Combined cohort badge notation (e.g. `BSCS F26/BSIT F26`, `BSCS F24`).
+   - `Room No.`: Allocated examination room numbers or computer labs (e.g. `Room 25, Room 26` / `Lab 2, Lab 3`). Merged across the session if uniform.
+   - `Students Count`: Number of students enrolled in that specific course in this session.
+   - `Total Students per Session`: Total students taking exams in that time window, vertically merged/rowSpanned across all courses of the session.
+3. **Grouping & Visual Spacing:**
+   - Grouped by Date with full-width banner rows (`DD/MM/YYYY - DayName`, e.g. `26/10/2026 - Monday`).
+   - Grouped by Session Window with unique course aggregation (multiple sections/teachers of the same course combine into a single clean course row).
+   - Spacer rows between distinct time sessions.
+4. **Export Endpoints:**
+   - `GET /api/datesheet/export.xlsx` (`datesheet_xlsx`): Generates openpyxl workbook matching `doc/reference_datesheet.xlsx` row-for-row with cell merges, borders, and column widths.
+   - `GET /api/datesheet/export.pdf` (`datesheet_pdf`): Generates Landscape A4 PDF with table, headers, date banners, and rowSpanned sessions.
+   - **Frontend UI & Print (`DatesheetPage.jsx`):** Matches the exact 7 columns and institutional layout on screen, with `@media print` CSS optimizing the layout for clean paper printing.
+
+### 5.4 Seating & Roll Slip Rendering Rules
 - **Seating Excel (`exports.seating_xlsx`):** Creates one worksheet per room (tab title truncated to Excel's `31`-character limit), prints `Column XX` and `COURSE - Teacher` / `— (Vacant)` headers, sets uniform column width `20` and row heights (`24` head, `28` sub-head, `20` data), and renders `max(room.rows, max(len(col.roll_nos)))` rows so empty buffer chairs always appear.
 - **Seating UI Rendering (`SeatingPlanPage.jsx`):** Uses `Math.max(room.rows || 0, ...sheet.columns.map(c => c.roll_nos.length), 0)` with `26px` table cell height so trailing empty buffer seats never collapse in browser or print views.
 - **Roll Slip PDF (`exports.roll_slip_pdf` / `roll_slips_pdf`):** A4 `190mm` usable table width (`15mm` auto page-break margin), sorts papers chronologically, truncates course titles over `32` chars (`title[:29] + "..."`), prints Notes `i–iv`, and appends an IT-Center timestamp footer.
+
+### 5.5 Room Utilization, Co-Scheduling & Stream Seating Rules
+- **At Least 90% Room Utilization:** Examination halls must be utilized efficiently. In slots with written exams, courses from different cohorts/batches are co-scheduled together (e.g. `IT332` [180 students, Batch F23] paired with `CS344` [65 students, Batch F24] and `M101` [15 students]) to achieve >= 90% (e.g. 95.9%) hall utilization across Room 25, 26, 27, 18, 21, and 28.
+- **Strict Anti-Cheating Column Alternation:**
+  - In every room, adjacent columns must never share both the same course and instructor (`(course_a != course_b) or (instructor_a != instructor_b)`).
+  - Even columns and odd columns draw from distinct streams (`Stream 0` and `Stream 1`).
+  - When courses share an instructor or have multiple instructors (e.g., Dr. Muhammad Adeel vs. Mr. Abid Jamil), teacher groups are partitioned strictly across opposite streams to prevent adjacent duplication.
+  - Zero vacant alternate columns exist in full halls; trailing buffer chairs (>= 5 chairs) are kept at the end of the final room.
+- **Single Source of Truth & Immediate SQLite Persistence:**
+  - All room dimensions, courses, instructor assignments, students, and time slots are persisted immediately to `backend/exam_portal.sqlite3` via `self.save()` on every mutation.
+  - Exact hall and lab dimensions configured in database: Room 25 (7x5=35), Room 26 (10x7=70), Room 27 (7x5=35), Room 18 (10x6=60), Room 21 (7x5=35), Room 28 (7x5=35), and Labs 2, 3, 4, 5 (5x5=25 each).
+
+### 5.6 Session Capacity & Strict Room Type Isolation Rules
+- **Maximum 330 Students per Slot:** In any single examination session / time slot, the total student count across all scheduled courses (written + lab) must not exceed round about 330 students (`max <= 330`).
+- **Strict Room Type Isolation:**
+  - **Lab Exams:** Must strictly and exclusively be allocated to Computer Labs (`Lab 2`, `Lab 3`, `Lab 4`, `Lab 5`). Lab courses must NEVER be assigned to an examination hall room.
+  - **Written Exams:** Must strictly and exclusively be allocated to Examination Halls (`Room 25`, `Room 26`, `Room 27`, `Room 18`, `Room 21`, `Room 28`). Written courses must NEVER be assigned to a computer lab room.
+  - **Real-Time Seating Synchronization:** Datesheet room pills and export columns strictly verify `is_lab == is_lab_room` and match the exact seated course code in each room's grid.

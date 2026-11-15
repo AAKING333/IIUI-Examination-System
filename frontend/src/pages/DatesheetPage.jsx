@@ -11,26 +11,112 @@ export default function DatesheetPage({
   const entries = datesheet.datesheet || [];
   const unplaced = datesheet.unplaced || [];
 
-  // Instant Search filter like AAKING333
+  // Instant Search filter
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Distinct dates in the schedule
-  const distinctDates = useMemo(() => {
-    return Array.from(new Set(entries.map((e) => e.date))).length;
-  }, [entries]);
 
   // Distinct rooms allocated across all papers
   const distinctRoomsAllocated = useMemo(() => {
     const rSet = new Set();
     entries.forEach((e) => {
       if (Array.isArray(e.allocated_rooms)) {
-        e.allocated_rooms.forEach((r) => rSet.add(r));
+        e.allocated_rooms.forEach((r) => r && rSet.add(r));
       }
     });
     return rSet.size;
   }, [entries]);
 
-  // Filtered entries based on instant search (AAKING333 style)
+  // Clean format helpers matching official IIUI Reference Datesheet
+  const fmtCourseCode = (code) => {
+    if (!code) return '';
+    return code.replace(/([A-Za-z]+)(\d+)/, '$1 $2');
+  };
+
+  const TOTAL_COHORT_SECTIONS = {
+    'BSCS F23': ['A', 'B', 'C'],
+    'BSCS F24': ['A', 'B'],
+    'BSCS F25': ['A', 'B'],
+    'BSCS F26': ['A', 'B'],
+    'BSIT F23': ['A', 'B'],
+    'BSIT F24': ['A', 'B'],
+    'BSIT F25': ['A', 'B'],
+    'BSIT F26': ['A', 'B'],
+  };
+
+  const formatCourseBatches = (centries) => {
+    if (!centries || centries.length === 0) return '—';
+    const cohortMap = new Map();
+
+    centries.forEach((e) => {
+      let prog = (e.program || '').trim();
+      let batch = (e.batch || '').trim();
+      if (!prog || !batch) {
+        const m = (e.batches || '').match(/(BSCS|BSIT|BSSE|BSDS|MSCS|MSDS|PhD CS)\s+([F|S]\d+)/i);
+        if (m) {
+          prog = m[1].toUpperCase();
+          batch = m[2].toUpperCase();
+        }
+      }
+      const key = `${prog} ${batch}`.trim();
+      if (!key) return;
+      if (!cohortMap.has(key)) cohortMap.set(key, new Set());
+
+      const secs = cohortMap.get(key);
+      if (Array.isArray(e.sections) && e.sections.length > 0) {
+        e.sections.forEach((s) => s && secs.add(String(s).trim().toUpperCase()));
+      } else if (e.section) {
+        String(e.section).split(/[,+/]/).forEach((s) => s && secs.add(String(s).trim().toUpperCase()));
+      } else if (e.batches) {
+        const secMatch = e.batches.match(/Section\s+([A-Za-z0-9+,\s]+)/i);
+        if (secMatch) {
+          secMatch[1].split(/[+,\s]+/).forEach((s) => s && secs.add(String(s).trim().toUpperCase()));
+        }
+      }
+    });
+
+    if (cohortMap.size === 0) {
+      return centries[0].batches || '—';
+    }
+
+    const labels = [];
+    cohortMap.forEach((sectionsSet, key) => {
+      const knownAll = TOTAL_COHORT_SECTIONS[key] || ['A', 'B'];
+      const presentSecs = Array.from(sectionsSet).sort();
+      const isAll = presentSecs.length >= knownAll.length && knownAll.every((s) => sectionsSet.has(s));
+
+      if (presentSecs.length > 0 && !isAll) {
+        labels.push(`${key} (Sec ${presentSecs.join(', ')})`);
+      } else {
+        labels.push(key);
+      }
+    });
+
+    return labels.join(' / ') || '—';
+  };
+
+  const cleanInstName = (instructorStr) => {
+    if (!instructorStr) return '';
+    return instructorStr
+      .replace(/\s*\(All Batches:[^)]*\)/i, '')
+      .replace(/\s*\((?:BSCS|BSIT|BSSE|BSDS|MSCS|MSDS|PhD CS)[^)]*\)/gi, '')
+      .replace(/,\s*,/g, ',')
+      .trim();
+  };
+
+  const fmtDateString = (dateStr) => {
+    try {
+      const parts = dateStr.split('-');
+      if (parts.length === 3) {
+        const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+        const dayName = d.toLocaleDateString('en-US', { weekday: 'long' });
+        return `${parts[2]}/${parts[1]}/${parts[0]} - ${dayName}`;
+      }
+    } catch {
+      // fallback
+    }
+    return dateStr;
+  };
+
+  // Filtered entries based on instant search
   const filteredEntries = useMemo(() => {
     if (!searchQuery.trim()) return entries;
     const q = searchQuery.toLowerCase().trim();
@@ -42,8 +128,9 @@ export default function DatesheetPage({
       const dayMatch = (e.day_name || '').toLowerCase().includes(q);
       const labelMatch = (e.label || '').toLowerCase().includes(q);
       const batchMatch = (e.batches || '').toLowerCase().includes(q);
-      const roomMatch = Array.isArray(e.allocated_rooms) &&
-        e.allocated_rooms.some((r) => r.toLowerCase().includes(q));
+      const roomMatch =
+        Array.isArray(e.allocated_rooms) &&
+        e.allocated_rooms.some((r) => r && r.toLowerCase().includes(q));
 
       return (
         codeMatch ||
@@ -58,55 +145,127 @@ export default function DatesheetPage({
     });
   }, [entries, searchQuery]);
 
-  // Clean parser for instructor cell
-  const parseInstructorCell = (rawStr) => {
-    if (!rawStr) return [];
-    let str = rawStr.replace(/\s*\(All Batches:[^)]*\)/i, '').trim();
+  // Group filtered entries by Date -> Session Window -> Unique Course
+  const groupedDatesheet = useMemo(() => {
+    const dateMap = new Map();
+    const sorted = [...filteredEntries].sort((a, b) => {
+      const dComp = (a.date || '').localeCompare(b.date || '');
+      if (dComp !== 0) return dComp;
+      return (a.start_time || '').localeCompare(b.start_time || '');
+    });
 
-    if (str.includes('|')) {
-      const parts = str.split('|').map((p) => p.trim()).filter(Boolean);
-      const map = new Map();
-      for (const part of parts) {
-        if (part.includes(':') && !part.match(/^(?:Dr\.|Engr\.|Mr\.|Ms\.)/i)) {
-          const [left, right] = part.split(':').map((s) => s.trim());
-          const teacher = right;
-          const tag = left;
-          if (!map.has(teacher)) map.set(teacher, []);
-          if (tag && !map.get(teacher).includes(tag)) map.get(teacher).push(tag);
-        } else {
-          const m = part.match(/^([^(]+?)\s*(?:\((.+)\))?$/);
-          if (m) {
-            const teacher = m[1].trim();
-            const tag = m[2]?.trim() || '';
-            if (!map.has(teacher)) map.set(teacher, []);
-            if (tag && !map.get(teacher).includes(tag)) map.get(teacher).push(tag);
-          } else {
-            if (!map.has(part)) map.set(part, []);
-          }
+    for (const e of sorted) {
+      const d = e.date || 'Unscheduled';
+      if (!dateMap.has(d)) dateMap.set(d, []);
+      dateMap.get(d).push(e);
+    }
+
+    const result = [];
+
+    dateMap.forEach((dayEntries, dateStr) => {
+      const slotMap = new Map();
+      for (const e of dayEntries) {
+        const skey = `${e.slot_id || ''}|${e.start_time || ''}|${e.end_time || ''}`;
+        if (!slotMap.has(skey)) {
+          slotMap.set(skey, {
+            slot_id: e.slot_id || '',
+            start_time: e.start_time || '',
+            end_time: e.end_time || '',
+            time_str: `${e.start_time || ''} - ${e.end_time || ''}`,
+            entries: [],
+          });
         }
+        slotMap.get(skey).entries.push(e);
       }
 
-      const result = [];
-      map.forEach((tags, teacher) => {
-        let cleanTag = tags.join(', ');
-        const progs = [...new Set(tags.map((t) => t.match(/BS[A-Z]+/i)?.[0]).filter(Boolean))];
-        const secs = [...new Set(tags.map((t) => t.match(/Sec\s*([A-D](?:\s*&\s*[A-D])?)/i)?.[1]).filter(Boolean))];
-        if (progs.length && secs.length > 1) {
-          cleanTag = progs.join('/') + ': Sec ' + secs.join(', ');
-        } else if (progs.length && secs.length === 1) {
-          cleanTag = progs.join('/') + ': Sec ' + secs[0];
-        }
-        result.push({ name: teacher, tag: cleanTag });
-      });
-      return result;
-    }
+      const sessions = [];
+      slotMap.forEach((slotData) => {
+        const totalSessionStudents = slotData.entries.reduce(
+          (sum, e) => sum + (e.students || 0),
+          0
+        );
 
-    const m = str.match(/^([^(]+?)\s*(?:\((.+)\))?$/);
-    if (m) {
-      return [{ name: m[1].trim(), tag: m[2]?.trim() || '' }];
-    }
-    return [{ name: str, tag: '' }];
-  };
+        // Group by unique course_code
+        const courseMap = new Map();
+        for (const e of slotData.entries) {
+          const ccode = e.course_code || '';
+          if (!courseMap.has(ccode)) courseMap.set(ccode, []);
+          courseMap.get(ccode).push(e);
+        }
+
+        const courses = [];
+        courseMap.forEach((centries, ccode) => {
+          const title = centries[0]?.course_title || '';
+          const fmtCode = fmtCourseCode(ccode);
+          const courseName = `${fmtCode} ${title}`.trim();
+
+          // Deduplicate instructors
+          const instSet = new Set();
+          for (const e of centries) {
+            const raw = e.instructor || '';
+            const cleaned = cleanInstName(raw);
+            cleaned.split(',').forEach((p) => {
+              const trimmed = p.trim();
+              if (trimmed && trimmed !== '—' && trimmed !== '-') {
+                instSet.add(trimmed);
+              }
+            });
+          }
+          const instructorStr = Array.from(instSet).join(', ') || '—';
+
+          // Section-aware cohort label (e.g. BSCS F26 (Sec B) or BSCS F23 / BSIT F23)
+          const batchStr = formatCourseBatches(centries);
+
+          // Allocated rooms
+          const roomSet = new Set();
+          for (const e of centries) {
+            if (Array.isArray(e.allocated_rooms)) {
+              e.allocated_rooms.forEach((r) => r && roomSet.add(r));
+            }
+          }
+          const rooms = Array.from(roomSet);
+          const roomStr = rooms.join(', ') || '—';
+
+          const courseStudents = centries.reduce(
+            (sum, e) => sum + (e.students || 0),
+            0
+          );
+
+          courses.push({
+            course_code: ccode,
+            fmt_code: fmtCode,
+            course_title: title,
+            course_name: courseName,
+            instructor: instructorStr,
+            batches: batchStr,
+            rooms,
+            room_str: roomStr,
+            students: courseStudents,
+          });
+        });
+
+        const allSameRooms =
+          courses.length > 1 &&
+          new Set(courses.map((c) => c.room_str)).size === 1;
+
+        sessions.push({
+          slot_id: slotData.slot_id,
+          time_str: slotData.time_str,
+          session_total: totalSessionStudents,
+          all_same_rooms: allSameRooms,
+          courses,
+        });
+      });
+
+      result.push({
+        date: dateStr,
+        date_formatted: fmtDateString(dateStr),
+        sessions,
+      });
+    });
+
+    return result;
+  }, [filteredEntries]);
 
   const handlePrint = () => {
     window.print();
@@ -114,12 +273,12 @@ export default function DatesheetPage({
 
   return (
     <div className="itms-dash__main">
-      {/* Page Header with Action Toolbar */}
+      {/* Top Action Toolbar (hidden during print) */}
       <div className="itms-dash__pageHeader no-print">
         <div>
           <h1 className="itms-dash__pageTitle">Midterm Examination Datesheet</h1>
           <p className="itms-dash__pageSub">
-            Automated clash-free examination datesheet with synchronized hall allocations and back-paper compliance.
+            Official IIUI examination datesheet with synchronized room allocations and back-paper compliance.
           </p>
         </div>
         <div className="toolbar__actions">
@@ -135,10 +294,25 @@ export default function DatesheetPage({
           <a
             href="/api/datesheet/export.xlsx"
             className={`btn btn--secondary ${!entries.length ? 'disabled' : ''}`}
-            download
-            style={{ pointerEvents: !entries.length ? 'none' : 'auto', opacity: !entries.length ? 0.6 : 1 }}
+            download="IIUI_Midterm_Exam_Datesheet_Fall_2026.xlsx"
+            style={{
+              pointerEvents: !entries.length ? 'none' : 'auto',
+              opacity: !entries.length ? 0.6 : 1,
+            }}
           >
             Export Excel
+          </a>
+
+          <a
+            href="/api/datesheet/export.pdf"
+            className={`btn btn--secondary ${!entries.length ? 'disabled' : ''}`}
+            download="IIUI_Midterm_Exam_Datesheet_Fall_2026.pdf"
+            style={{
+              pointerEvents: !entries.length ? 'none' : 'auto',
+              opacity: !entries.length ? 0.6 : 1,
+            }}
+          >
+            Export PDF
           </a>
 
           <button
@@ -152,7 +326,20 @@ export default function DatesheetPage({
         </div>
       </div>
 
-      {/* KPI Stats Strip (AAKING333 Style) */}
+      {/* KPI Stats Strip (hidden during print) */}
+      {datesheet.version && (
+        <div
+          className={`alert-banner ${datesheet.status === 'SUPERSEDED' ? 'alert-banner--danger' : 'alert-banner--success'} no-print`}
+          style={{ marginBottom: '1rem' }}
+        >
+          Datesheet version {datesheet.version} · {datesheet.status}
+          {datesheet.published_at
+            ? ` · Published ${new Date(datesheet.published_at).toLocaleString()}`
+            : ''}
+          {datesheet.status === 'SUPERSEDED' &&
+            ' · Roll slips and seating charts from this version are no longer valid.'}
+        </div>
+      )}
       <div className="datesheet-kpi-grid no-print">
         <div className="datesheet-kpi-card">
           <span className="datesheet-kpi-label">TOTAL COURSES</span>
@@ -160,29 +347,33 @@ export default function DatesheetPage({
         </div>
         <div className="datesheet-kpi-card">
           <span className="datesheet-kpi-label">TOTAL STUDENTS</span>
-          <span className="datesheet-kpi-val">{studentsCount || 200}</span>
+          <span className="datesheet-kpi-val">{studentsCount}</span>
         </div>
         <div className="datesheet-kpi-card">
           <span className="datesheet-kpi-label">SCHEDULED PAPERS</span>
           <span className="datesheet-kpi-val">{entries.length}</span>
         </div>
         <div className="datesheet-kpi-card">
-          <span className="datesheet-kpi-label">ACTIVE EXAM HALLS</span>
+          <span className="datesheet-kpi-label">ACTIVE EXAM ROOMS</span>
           <span className="datesheet-kpi-val">
-            {distinctRoomsAllocated > 0 ? distinctRoomsAllocated : roomsCount || 4}
+            {distinctRoomsAllocated > 0 ? distinctRoomsAllocated : roomsCount}
           </span>
         </div>
       </div>
 
-      {/* Critical Unplaced Courses Warning (if any) */}
+      {/* Unplaced Courses Warning (if any) */}
       {unplaced.length > 0 && (
-        <div className="alert-banner alert-banner--danger no-print" style={{ borderLeft: '4px solid var(--itms-danger)', background: '#fef2f2' }}>
+        <div
+          className="alert-banner alert-banner--danger no-print"
+          style={{
+            borderLeft: '4px solid var(--itms-danger)',
+            background: '#fef2f2',
+            marginBottom: '1.25rem',
+          }}
+        >
           <div>
             <strong style={{ color: 'var(--itms-danger)' }}>Scheduling Conflict:</strong>{' '}
             {unplaced.length} course(s) could not be placed due to insufficient exam dates or student clashes.
-            <p style={{ margin: '0.3rem 0', fontSize: '0.82rem', color: '#991b1b' }}>
-              Under IIUI policy, each student can sit at most 1 regular paper per day. Please configure at least 5 separate exam dates in Time Slots Management.
-            </p>
             <ul style={{ margin: '0.4rem 0 0 1rem', padding: 0, fontSize: '0.78rem', color: '#7f1d1d' }}>
               {unplaced.map((u) => (
                 <li key={u.course_code}>
@@ -194,13 +385,13 @@ export default function DatesheetPage({
         </div>
       )}
 
-      {/* Main Table Container with Instant Search Bar */}
+      {/* Main Datesheet Card */}
       <div className="card-table-wrapper" style={{ padding: '1.25rem' }}>
-        {/* Instant Search Bar Header (AAKING333 Style) */}
+        {/* Instant Search Bar (hidden during print) */}
         <div className="datesheet-filter-strip no-print">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--iiui-navy)' }}>
-              Examination Datesheet Table
+              Official Datesheet Schedule
             </span>
             <span className="badge badge--muted" style={{ fontSize: '0.74rem' }}>
               {filteredEntries.length === entries.length
@@ -230,148 +421,140 @@ export default function DatesheetPage({
           </div>
         </div>
 
-        {/* Print Only Official IIUI Header */}
-        <div className="print-only" style={{ textAlign: 'center', marginBottom: '1.5rem', display: 'none' }}>
-          <h2 style={{ margin: '0 0 4px', fontSize: '1.25rem', color: '#004D25', fontWeight: 800 }}>
-            INTERNATIONAL ISLAMIC UNIVERSITY, ISLAMABAD
-          </h2>
-          <h3 style={{ margin: '0 0 4px', fontSize: '0.95rem', color: '#006633', fontWeight: 700 }}>
-            DEPARTMENT OF COMPUTER SCIENCE &amp; INFORMATION TECHNOLOGY
-          </h3>
-          <h4 style={{ margin: '0 0 4px', fontSize: '0.9rem', fontWeight: 700, textDecoration: 'underline' }}>
-            MIDTERM EXAMS DATESHEET (MALE) &mdash; FALL 2026
-          </h4>
+        {/* Institutional Reference Header (Matches doc/reference_datesheet.xlsx Rows 1-4) */}
+        <div className="reference-datesheet-header">
+          <div className="ref-univ-title">INTERNATIONAL ISLAMIC UNIVERSITY</div>
+          <div className="ref-dept-title">DEPARTMENT OF COMPUTER SCIENCE &amp; INFORMATION TECHNOLOGY</div>
+          <div className="ref-exam-title">MIDTERM EXAMS DATESHEET (MALE) - FALL 2026</div>
+          <div className="ref-version-title">Version {datesheet.version || '1.2'}</div>
         </div>
 
-        {/* Clean IIUI Datesheet Table (AAKING333 Matching Format) */}
+        {/* Clean Datesheet Table (Exact 7 Columns from doc/reference_datesheet.xlsx) */}
         <div className="table-responsive">
           <table className="data-table datesheet-table">
             <thead>
-              <tr style={{ background: '#004D25', color: '#ffffff' }}>
-                <th style={{ width: '13%' }}>Date &amp; Day</th>
-                <th style={{ width: '12%' }}>Time</th>
-                <th style={{ width: '9%' }}>Code</th>
-                <th style={{ width: '22%' }}>Course Title</th>
-                <th style={{ width: '21%' }}>Instructor(s)</th>
-                <th style={{ width: '9%', textAlign: 'center' }}>Enrolled</th>
-                <th style={{ width: '14%' }}>Allocated Rooms</th>
+              <tr>
+                <th style={{ width: '13%' }}>Date  (Day)</th>
+                <th style={{ width: '27%', textAlign: 'left' }}>Course</th>
+                <th style={{ width: '22%', textAlign: 'left' }}>Instructor</th>
+                <th style={{ width: '12%' }}>Batch(es)</th>
+                <th style={{ width: '12%' }}>Room No.</th>
+                <th style={{ width: '7%' }}>Students Count</th>
+                <th style={{ width: '7%' }}>Total Students per Session</th>
               </tr>
             </thead>
             <tbody>
-              {filteredEntries.map((d, i) => (
-                <tr key={`${d.slot_id}-${d.course_code}-${i}`}>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <strong style={{ color: 'var(--iiui-navy)', fontSize: '0.86rem' }}>{d.date}</strong>
-                    <span style={{ display: 'block', fontSize: '0.74rem', color: 'var(--itms-text-muted)', fontWeight: 500 }}>
-                      {d.day_name || 'Exam Day'}
-                    </span>
-                  </td>
+              {groupedDatesheet.map((dayGroup) => (
+                <React.Fragment key={dayGroup.date}>
+                  {/* Date Header Row (Same to same as Reference Datesheet Row 7) */}
+                  <tr className="datesheet-date-banner-row">
+                    <td colSpan={7}>
+                      <strong>{dayGroup.date_formatted}</strong>
+                    </td>
+                  </tr>
 
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '0.84rem', color: 'var(--itms-text-primary)' }}>
-                      {d.start_time} &ndash; {d.end_time}
-                    </span>
-                  </td>
+                  {/* Sessions in this day */}
+                  {dayGroup.sessions.map((session, sIdx) => {
+                    const k = session.courses.length;
+                    return (
+                      <React.Fragment key={`${dayGroup.date}-${session.slot_id}-${sIdx}`}>
+                        {session.courses.map((c, cIdx) => (
+                          <tr key={`${session.slot_id}-${c.course_code}-${cIdx}`} className="datesheet-row">
+                            {/* Col 1: Date (Day) / Time Slot */}
+                            {cIdx === 0 && (
+                              <td
+                                rowSpan={k}
+                                className="datesheet-cell-slot"
+                                style={{
+                                  textAlign: 'center',
+                                  verticalAlign: 'middle',
+                                  fontWeight: 700,
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {session.time_str}
+                              </td>
+                            )}
 
-                  <td>
-                    <span style={{ color: '#006633', fontWeight: 700, fontFamily: 'monospace', fontSize: '0.88rem' }}>
-                      {d.course_code}
-                    </span>
-                  </td>
+                            {/* Col 2: Course */}
+                            <td className="datesheet-cell-course" style={{ textAlign: 'left' }}>
+                              <span className="course-code-tag">{c.fmt_code}</span>
+                              <span>{c.course_title}</span>
+                            </td>
 
-                  <td>
-                    <div style={{ fontWeight: 600, color: 'var(--itms-text-primary)', fontSize: '0.86rem', lineHeight: 1.35 }}>
-                      {d.course_title}
-                    </div>
-                    {d.batches && (
-                      <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
-                        {d.batches.split(',').map((b, bIdx) => (
-                          <span
-                            key={bIdx}
-                            className={`badge ${b.includes('IT') ? 'badge--info' : 'badge--primary'}`}
-                            style={{ fontSize: '0.67rem', padding: '1px 6px', fontWeight: 600 }}
-                          >
-                            {b.trim()}
-                          </span>
+                            {/* Col 3: Instructor */}
+                            <td className="datesheet-cell-instructor" style={{ textAlign: 'left' }}>
+                              {c.instructor}
+                            </td>
+
+                            {/* Col 4: Batch(es) */}
+                            <td className="datesheet-cell-batches" style={{ textAlign: 'center' }}>
+                              <span className="batch-pill">{c.batches}</span>
+                            </td>
+
+                            {/* Col 5: Room No. */}
+                            {session.all_same_rooms ? (
+                              cIdx === 0 && (
+                                <td
+                                  rowSpan={k}
+                                  className="datesheet-cell-rooms"
+                                  style={{ textAlign: 'center', verticalAlign: 'middle' }}
+                                >
+                                  {c.rooms.length > 0 ? (
+                                    c.rooms.map((r, rIdx) => (
+                                      <span key={rIdx} className="room-pill">
+                                        {r}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span>—</span>
+                                  )}
+                                </td>
+                              )
+                            ) : (
+                              <td className="datesheet-cell-rooms" style={{ textAlign: 'center' }}>
+                                {c.rooms.length > 0 ? (
+                                  c.rooms.map((r, rIdx) => (
+                                    <span key={rIdx} className="room-pill">
+                                      {r}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span>—</span>
+                                )}
+                              </td>
+                            )}
+
+                            {/* Col 6: Students Count */}
+                            <td className="datesheet-cell-count" style={{ textAlign: 'center' }}>
+                              {c.students}
+                            </td>
+
+                            {/* Col 7: Total Students per Session */}
+                            {cIdx === 0 && (
+                              <td
+                                rowSpan={k}
+                                className="datesheet-cell-session-total"
+                                style={{
+                                  textAlign: 'center',
+                                  verticalAlign: 'middle',
+                                  fontWeight: 800,
+                                }}
+                              >
+                                {session.session_total}
+                              </td>
+                            )}
+                          </tr>
                         ))}
-                      </div>
-                    )}
-                  </td>
 
-                  <td>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {parseInstructorCell(d.instructor).map((inst, idx) => (
-                        <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 600, color: 'var(--itms-text-primary)', fontSize: '0.84rem' }}>
-                            {inst.name}
-                          </span>
-                          {inst.tag && (
-                            <span
-                              style={{
-                                fontSize: '0.7rem',
-                                fontWeight: 500,
-                                color: 'var(--iiui-navy)',
-                                background: '#f1f5f9',
-                                border: '1px solid #cbd5e1',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                              }}
-                            >
-                              {inst.tag}
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </td>
-
-                  <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                    {d.back_students > 0 ? (
-                      <div style={{ lineHeight: 1.3 }}>
-                        <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--iiui-navy)' }}>
-                          {d.students} <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--itms-text-muted)' }}>total</span>
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-secondary)', marginTop: '2px' }}>
-                          <span>{d.regular_students} regular</span> + <span style={{ color: '#d97706', fontWeight: 700 }}>{d.back_students} back</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ lineHeight: 1.3 }}>
-                        <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--iiui-navy)' }}>
-                          {d.students}
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)', marginTop: '2px' }}>
-                          regular
-                        </div>
-                      </div>
-                    )}
-                  </td>
-
-                  <td>
-                    {Array.isArray(d.allocated_rooms) && d.allocated_rooms.length > 0 ? (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {d.allocated_rooms.map((rm, rIdx) => (
-                          <span
-                            key={rIdx}
-                            style={{
-                              fontSize: '0.76rem',
-                              fontWeight: 600,
-                              background: '#eff6ff',
-                              color: '#1e40af',
-                              border: '1px solid #bfdbfe',
-                              padding: '2px 7px',
-                              borderRadius: '4px',
-                            }}
-                          >
-                            {rm}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span style={{ fontSize: '0.76rem', color: 'var(--itms-text-muted)' }}>Auto assigned</span>
-                    )}
-                  </td>
-                </tr>
+                        {/* Blank separator row between sessions (Matches Reference Rows 9, 12, 16) */}
+                        <tr className="datesheet-session-spacer-row">
+                          <td colSpan={7} />
+                        </tr>
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
               ))}
 
               {filteredEntries.length === 0 && entries.length > 0 && (

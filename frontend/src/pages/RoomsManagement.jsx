@@ -5,7 +5,7 @@ import Modal from '../components/Modal.jsx';
 export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingRoom, setEditingRoom] = useState(null);
-  const [formData, setFormData] = useState({ name: '', rows: 6, columns: 10, capacity: 60 });
+  const [formData, setFormData] = useState({ name: '', rows: 7, columns: 5, capacity: 35, room_type: 'hall' });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -14,7 +14,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
 
   const handleOpenAdd = () => {
     setEditingRoom(null);
-    setFormData({ name: '', rows: 6, columns: 10, capacity: 60 });
+    setFormData({ name: '', rows: 7, columns: 5, capacity: 35, room_type: 'hall' });
     setIsModalOpen(true);
   };
 
@@ -25,6 +25,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
       rows: room.rows,
       columns: room.columns,
       capacity: room.capacity || room.rows * room.columns,
+      room_type: room.room_type || (room.name.toLowerCase().includes('lab') ? 'lab' : 'hall'),
     });
     setIsModalOpen(true);
   };
@@ -140,6 +141,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
             <tr>
               <th>Room ID</th>
               <th>Hall Name</th>
+              <th>Category</th>
               <th>Grid Dimensions</th>
               <th>Total Capacity</th>
               <th style={{ textAlign: 'right' }}>Actions</th>
@@ -153,6 +155,13 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                 </td>
                 <td>
                   <strong>{r.name}</strong>
+                </td>
+                <td>
+                  {r.room_type === 'lab' || r.name.toLowerCase().includes('lab') ? (
+                    <span className="badge badge--success" style={{ fontWeight: 600 }}>Computer Lab</span>
+                  ) : (
+                    <span className="badge badge--secondary" style={{ fontWeight: 600 }}>Examination Hall</span>
+                  )}
                 </td>
                 <td>
                   {r.rows} Rows &times; {r.columns} Columns
@@ -185,7 +194,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
             ))}
             {rooms.length === 0 && (
               <tr>
-                <td colSpan={5} style={{ textAlign: 'center', padding: '2rem' }}>
+                <td colSpan={6} style={{ textAlign: 'center', padding: '2rem' }}>
                   No examination rooms configured. Click "Add New Room" above.
                 </td>
               </tr>
@@ -231,6 +240,18 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               required
             />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Room Category / Type</label>
+            <select
+              className="form-control"
+              value={formData.room_type || 'hall'}
+              onChange={(e) => setFormData({ ...formData, room_type: e.target.value })}
+            >
+              <option value="hall">Examination Hall (Room)</option>
+              <option value="lab">Computer Lab (Lab)</option>
+            </select>
           </div>
 
           <div className="form-row">

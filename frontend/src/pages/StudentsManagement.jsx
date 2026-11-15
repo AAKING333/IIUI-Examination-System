@@ -3,7 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 
 const PRESET_PROGRAMS = ['BSCS', 'BSIT', 'BSSE'];
-const PRESET_BATCHES = ['F24', 'F23', 'F22', 'F21'];
+const PRESET_BATCHES = ['F23', 'F24', 'F25', 'F26'];
 const PRESET_SECTIONS = ['A', 'B', 'C', 'D'];
 
 export default function StudentsManagement({
@@ -81,7 +81,7 @@ export default function StudentsManagement({
       batch: 'F23',
       section: 'A',
       faculty: 'Computing and Information Technology',
-      enrolments: courses.slice(0, 3).map((c) => ({ course: c.code, type: 'regular' })),
+      enrolments: courses.slice(0, 3).map((c) => ({ course: c.code, type: 'regular', attendance_percent: 100 })),
     });
     setIsModalOpen(true);
   };
@@ -100,7 +100,11 @@ export default function StudentsManagement({
       batch: student.batch || 'F23',
       section: student.section || 'A',
       faculty: student.faculty || 'Computing and Information Technology',
-      enrolments: existingEnrols.map((e) => ({ course: e.course, type: e.type || 'regular' })),
+      enrolments: existingEnrols.map((e) => ({
+        course: e.course,
+        type: e.type || 'regular',
+        attendance_percent: e.attendance_percent ?? 100,
+      })),
     });
     setIsModalOpen(true);
   };
@@ -111,7 +115,7 @@ export default function StudentsManagement({
     const nextCode = available ? available.code : courses[0].code;
     setFormData((prev) => ({
       ...prev,
-      enrolments: [...prev.enrolments, { course: nextCode, type: 'regular' }],
+      enrolments: [...prev.enrolments, { course: nextCode, type: 'regular', attendance_percent: 100 }],
     }));
   };
 
@@ -381,6 +385,7 @@ export default function StudentsManagement({
                         >
                           {e.course}
                           {e.type === 'back' ? ' (Back)' : ''}
+                          {(e.attendance_percent ?? 100) < 75 ? ` · ${e.attendance_percent}% attendance (ineligible)` : ''}
                         </span>
                       ))}
                     </div>
@@ -558,6 +563,19 @@ export default function StudentsManagement({
                     <option value="regular">Regular</option>
                     <option value="back">Back-Paper</option>
                   </select>
+
+                  <label style={{ minWidth: 105, fontSize: '0.72rem', color: 'var(--itms-text-muted)' }}>
+                    Attendance %
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      className="form-control"
+                      value={enrol.attendance_percent ?? 100}
+                      onChange={(e) => handleEnrolmentChange(idx, 'attendance_percent', e.target.value)}
+                      required
+                    />
+                  </label>
 
                   <button
                     type="button"

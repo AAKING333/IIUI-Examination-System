@@ -3,6 +3,7 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import AdminTopbar from './components/AdminTopbar.jsx';
 import AdminSidebar from './components/AdminSidebar.jsx';
+import Modal from './components/Modal.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import RoomsManagement from './pages/RoomsManagement.jsx';
 import CoursesManagement from './pages/CoursesManagement.jsx';
@@ -13,6 +14,7 @@ import DatesheetPage from './pages/DatesheetPage.jsx';
 import SeatingPlanPage from './pages/SeatingPlanPage.jsx';
 import RollSlipPage from './pages/RollSlipPage.jsx';
 import StudentVerificationPage from './pages/StudentVerificationPage.jsx';
+import ExamOperationsPage from './pages/ExamOperationsPage.jsx';
 import './styles/tokens.css';
 import './styles/dashboard.css';
 import './styles/admin.css';
@@ -33,6 +35,7 @@ export default function App() {
   // UI state
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
 
   const showBanner = useCallback((message, type = 'info', options = {}) => {
     const toastType = type === 'danger' ? 'error' : type;
@@ -122,16 +125,18 @@ export default function App() {
   };
 
   // Reset to seed data
-  const handleResetData = async () => {
-    if (!window.confirm('Reset database to default seed state? Any custom entries will be restored to seed defaults.')) {
-      return;
-    }
+  const handleRequestReset = () => {
+    setIsResetConfirmOpen(true);
+  };
+
+  const executeResetData = async () => {
     setIsResetting(true);
     try {
       const res = await fetch('/api/reset-data', { method: 'POST' });
       if (!res.ok) throw new Error(await res.text());
       await loadInitialData();
       showBanner('Database successfully reset to initial factory seed data.', 'success');
+      setIsResetConfirmOpen(false);
     } catch (err) {
       showBanner(`Reset failed: ${err.message}`, 'danger');
     } finally {
@@ -302,6 +307,16 @@ export default function App() {
             />
           )}
 
+          {(currentView === 'operations' || currentView === 'reports') && (
+            <ExamOperationsPage
+              slots={slots}
+              rooms={rooms}
+              students={students}
+              datesheet={datesheet}
+              showBanner={showBanner}
+            />
+          )}
+
           {currentView === 'rollslip' && (
             <RollSlipPage
               showBanner={showBanner}
@@ -309,6 +324,40 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Database Reset Confirmation Modal */}
+      <Modal
+        isOpen={isResetConfirmOpen}
+        title="Confirm Database Reset"
+        onClose={() => setIsResetConfirmOpen(false)}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={() => setIsResetConfirmOpen(false)}
+              disabled={isResetting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--danger"
+              onClick={executeResetData}
+              disabled={isResetting}
+            >
+              {isResetting ? 'Resetting...' : 'Yes, Reset Database'}
+            </button>
+          </>
+        }
+      >
+        <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--itms-text)' }}>
+          Reset database to default seed state?
+        </p>
+        <p style={{ marginTop: '0.5rem', fontSize: '0.82rem', color: 'var(--itms-danger)' }}>
+          Any custom entries or adjustments will be erased and restored to factory seed defaults.
+        </p>
+      </Modal>
     </div>
   );
 }

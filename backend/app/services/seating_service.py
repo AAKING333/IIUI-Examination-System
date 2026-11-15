@@ -1,0 +1,280 @@
+"""Seating Plan Matrix generation, custom plan overrides, and datesheet synchronization service."""
+import copy
+import datetime
+import logging
+import re
+from collections import defaultdict
+
+from fastapi import HTTPException
+
+from data import store, enrolment_type
+from database import database
+from seating import build_seating_plan
+from app.state import datesheet_state, seating_cache
+
+logger = logging.getLogger("exam_portal.seating_service")
+
+
+def sync_datesheet_rooms(state: dict) -> None:
+    """Enriches datesheet entries in real-time from active seating plan allocations."""
+    if not state or not state.get("datesheet"):
+        return
+    entries = state["datesheet"]
+    slot_entries = defaultdict(list)
+    for e in entries:
+        sid = e.get("slot_id")
+        if sid:
+            slot_entries[sid].append(e)
+
+    for sid, s_entries in slot_entries.items():
+        try:
+            plan = resolve_seating_plan(sid)
+        except Exception:
+            continue
+        allocated_by_entry = defaultdict(list)
+        for r in plan.get("rooms", []):
+            if r.get("seated", 0) <= 0:
+                continue
+            r_name = r.get("room_name") or r.get("name") or str(r.get("room_id"))
+            r_source = store.get_room(r.get("room_id")) or {}
+            is_lab_room = r_source.get("room_type") == "lab" or "lab" in r_name.lower()
+            col_papers = [re.sub(r"-T\d+$", "", p) for p in (r.get("column_papers") or []) if p]
+            col_teachers = [t for t in (r.get("column_teachers") or []) if t]
+
+            seated_rolls_by_course = defaultdict(set)
+            for row in r.get("grid", []):
+                for seat in row:
+                    if seat and seat.get("roll_no") and seat.get("course_code"):
+                        code_clean = re.sub(r"-T\d+$", "", seat["course_code"])
+                        seated_rolls_by_course[code_clean].add(seat["roll_no"])
+
+            sheet = r.get("seating_sheet")
+            if sheet and sheet.get("columns"):
+                for col in sheet["columns"]:
+                    paper_raw = col.get("paper") or ""
+                    code_clean = re.sub(r"-T\d+$", "", paper_raw.strip())
+                    for roll in col.get("roll_nos", []):
+                        if roll and str(roll).strip():
+                            seated_rolls_by_course[code_clean].add(str(roll).strip())
+
+            for e in s_entries:
+                e_is_lab = bool(e.get("is_lab"))
+                # STRICT CONSTRAINT: Lab papers only get Lab rooms; Written papers only get Hall rooms!
+                if e_is_lab != is_lab_room:
+                    continue
+
+                e_code = e.get("course_code", "")
+                e_inst = e.get("instructor", "")
+                c = store.get_course(e_code)
+                e_rolls = set(c.get("student_roll_numbers", [])) if c else set()
+
+                matched = False
+                course_seated_rolls = seated_rolls_by_course.get(e_code, set())
+                if e_rolls and course_seated_rolls and (e_rolls & course_seated_rolls):
+                    matched = True
+                elif e_code in col_papers:
+                    if not e_inst or e_inst in col_teachers or len(col_teachers) == 0:
+                        matched = True
+
+                if matched and r_name not in allocated_by_entry[id(e)]:
+                    allocated_by_entry[id(e)].append(r_name)
+
+        for e in s_entries:
+            e["allocated_rooms"] = allocated_by_entry.get(id(e), [])
+
+
+def resolve_seating_plan(slot_id: str):
+    """Resolves the seating plan for a time slot: custom DB override or algorithmic generator."""
+    if datesheet_state.get("status") == "SUPERSEDED":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Datesheet version {datesheet_state.get('version')} is superseded; regenerate it before using seating plans.",
+        )
+    if slot_id in seating_cache:
+        return seating_cache[slot_id]
+
+    custom = database.get_custom_seating_plan(slot_id)
+    if custom:
+        seating_cache[slot_id] = custom
+        return custom
+
+    slot = store.get_time_slot(slot_id)
+    if not slot:
+        raise HTTPException(status_code=404, detail=f"Time slot '{slot_id}' not found.")
+
+    entries = [d for d in datesheet_state["datesheet"] if d["slot_id"] == slot_id]
+    if not entries:
+        raise HTTPException(
+            status_code=404,
+            detail="No courses scheduled in this slot yet. Generate the datesheet first.",
+        )
+
+    slot_courses = []
+    for e in entries:
+        course = store.get_course(e["course_code"])
+        if not course:
+            continue
+        course = copy.deepcopy(course)
+        if e.get("program") and e.get("batch") and e.get("section"):
+            group_rolls = [
+                roll for roll in course.get("student_roll_numbers", [])
+                if (student := store.student_by_roll.get(roll))
+                and student.get("program") == e["program"]
+                and student.get("batch") == e["batch"]
+                and student.get("section") in e.get("sections", [e["section"]])
+                and store.get_attendance_percent(roll, e["course_code"]) >= 75
+                and store.get_instructor_for_student_course(student, e["course_code"]) == e.get("instructor")
+            ]
+            course["student_roll_numbers"] = group_rolls
+            course["regular_roll_numbers"] = [
+                roll for roll in group_rolls if enrolment_type(roll, e["course_code"]) == "regular"
+            ]
+            course["back_roll_numbers"] = [
+                roll for roll in group_rolls if enrolment_type(roll, e["course_code"]) == "back"
+            ]
+            course["instructor"] = e.get("instructor", course.get("instructor", ""))
+            course["instructors"] = [course["instructor"]] if course["instructor"] else []
+            course["batches"] = e.get("batches", course.get("batches", ""))
+            course["is_lab"] = bool(e.get("is_lab"))
+        slot_courses.append(course)
+
+    written_papers = []
+    written_entries_by_code = defaultdict(list)
+    for e in entries:
+        if not e.get("is_lab"):
+            written_entries_by_code[e["course_code"]].append(e)
+
+    for code, e_list in written_entries_by_code.items():
+        course = store.get_course(code)
+        if not course:
+            continue
+
+        teacher_rolls = defaultdict(list)
+        for e in e_list:
+            group_rolls = [
+                roll for roll in course.get("student_roll_numbers", [])
+                if (student := store.student_by_roll.get(roll))
+                and student.get("program") == e["program"]
+                and student.get("batch") == e["batch"]
+                and student.get("section") in e.get("sections", [e["section"]])
+                and store.get_attendance_percent(roll, code) >= 75
+                and store.get_instructor_for_student_course(student, code) == e.get("instructor")
+            ]
+            inst = e.get("instructor") or course.get("instructor", "")
+            teacher_rolls[inst].extend(group_rolls)
+
+        if len(teacher_rolls) >= 2:
+            for t_idx, (inst, rolls) in enumerate(teacher_rolls.items(), start=1):
+                if rolls:
+                    written_papers.append({
+                        "code": f"{code}-T{t_idx}",
+                        "title": course["title"],
+                        "instructor": inst,
+                        "student_roll_numbers": rolls,
+                    })
+        else:
+            all_rolls = [r for rolls in teacher_rolls.values() for r in rolls]
+            inst = next(iter(teacher_rolls.keys()), course.get("instructor", ""))
+            written_papers.append({
+                "code": code,
+                "title": course["title"],
+                "instructor": inst,
+                "student_roll_numbers": all_rolls,
+            })
+
+    lab_courses = [c for c in slot_courses if c.get("is_lab")]
+    hall_rooms = [r for r in store.get_rooms() if r.get("room_type", "hall") != "lab" and r.get("capacity", 0) > 0]
+    lab_rooms = [r for r in store.get_rooms() if r.get("room_type") == "lab" and r.get("capacity", 0) > 0]
+
+    rooms_out = []
+    if written_papers:
+        sp_written = build_seating_plan(written_papers, hall_rooms, store.student_by_roll)
+        rooms_out.extend(sp_written.get("rooms", []))
+    if lab_courses:
+        sp_labs = build_seating_plan(lab_courses, lab_rooms, store.student_by_roll)
+        rooms_out.extend(sp_labs.get("rooms", []))
+
+    rooms_out = [r for r in rooms_out if r.get("seated", 0) > 0]
+    total_seated = sum(r["seated"] for r in rooms_out)
+    total_usable = sum(r["usable_capacity"] for r in rooms_out)
+    total_physical = sum(r["capacity"] for r in rooms_out)
+    util_pct = round((total_seated / total_usable * 100), 1) if total_usable else 0.0
+
+    plan = {
+        "rooms": rooms_out,
+        "total_students": total_seated,
+        "total_capacity": total_usable,
+        "physical_capacity": total_physical,
+        "utilisation_pct": util_pct,
+        "adjacent_rule_pass": all(r.get("adjacent_rule_pass", True) for r in rooms_out),
+        "extra_empty_chairs": 0,
+        "empty_chairs_rule_pass": True,
+        "slot_id": slot_id,
+        "date": slot["date"],
+        "start_time": slot["start_time"],
+        "end_time": slot["end_time"],
+        "label": slot.get("label", ""),
+        "courses": [{"code": c["code"], "title": c["title"]} for c in slot_courses],
+    }
+
+    seating_cache[slot_id] = plan
+    return plan
+
+
+def save_custom_seating_plan(payload: dict) -> dict:
+    """Saves custom edited seating plan, updates datesheet allocations, and publishes state."""
+    global datesheet_state
+    slot_id = payload.get("slot_id")
+    if not slot_id:
+        raise HTTPException(status_code=400, detail="Missing slot_id in seating plan payload.")
+
+    rooms = payload.get("rooms", [])
+    for r in rooms:
+        sheet = r.get("seating_sheet")
+        if sheet and sheet.get("columns"):
+            count = 0
+            for col in sheet["columns"]:
+                count += sum(1 for roll in col.get("roll_nos", []) if roll and str(roll).strip())
+            r["seated"] = count
+            max_c_rows = max([r.get("rows", 0)] + [len(col.get("roll_nos", [])) for col in sheet["columns"]], default=0)
+            r["rows"] = max_c_rows
+
+    active_rooms = [r for r in rooms if r.get("seated", 0) > 0]
+    total_seated = sum(r.get("seated", 0) for r in active_rooms)
+    total_usable = sum(r.get("usable_capacity", 0) for r in active_rooms)
+    total_physical = sum(r.get("capacity", 0) for r in active_rooms)
+    util_pct = round((total_seated / total_usable * 100), 1) if total_usable else 0.0
+
+    plan = {
+        **payload,
+        "rooms": active_rooms,
+        "total_students": total_seated,
+        "total_capacity": total_usable,
+        "physical_capacity": total_physical,
+        "utilisation_pct": util_pct,
+    }
+
+    timestamp = datetime.datetime.now().isoformat()
+    database.save_custom_seating_plan(slot_id, plan, timestamp)
+    seating_cache[slot_id] = plan
+
+    # Synchronize datesheet state so any vacated rooms (like Lab 4) are removed from datesheet
+    sync_datesheet_rooms(datesheet_state)
+    database.publish_datesheet(datesheet_state, timestamp)
+
+    logger.info("Custom seating plan saved for slot %s (%d rooms, %d students).", slot_id, len(active_rooms), total_seated)
+    return {
+        "status": "success",
+        "message": "Seating plan saved and datesheet synchronized.",
+        "plan": plan,
+    }
+
+
+def regenerate_seating_plan(slot_id: str) -> dict:
+    """Clears custom overrides for a slot and regenerates algorithmic plan."""
+    database.delete_custom_seating_plan(slot_id)
+    seating_cache.pop(slot_id, None)
+    plan = resolve_seating_plan(slot_id)
+    sync_datesheet_rooms(datesheet_state)
+    database.publish_datesheet(datesheet_state, datetime.datetime.now().isoformat())
+    return plan

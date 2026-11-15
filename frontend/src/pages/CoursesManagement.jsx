@@ -9,6 +9,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
     code: '',
     title: '',
     credit_hours: 3,
+    is_lab: false,
   });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -22,6 +23,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
       code: '',
       title: '',
       credit_hours: 3,
+      is_lab: false,
     });
     setIsModalOpen(true);
   };
@@ -32,6 +34,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
       code: course.code,
       title: course.title,
       credit_hours: course.credit_hours || 3,
+      is_lab: Boolean(course.is_lab),
     });
     setIsModalOpen(true);
   };
@@ -58,6 +61,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
           body: JSON.stringify({
             title: formData.title.trim(),
             credit_hours: cr,
+            is_lab: Boolean(formData.is_lab),
           }),
         });
         if (!res.ok) throw new Error(await res.text());
@@ -70,6 +74,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
             code: formData.code.trim().toUpperCase(),
             title: formData.title.trim(),
             credit_hours: cr,
+            is_lab: Boolean(formData.is_lab),
           }),
         });
         if (!res.ok) throw new Error(await res.text());
@@ -160,6 +165,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
                 </td>
                 <td>
                   <strong style={{ fontSize: '0.94rem', color: 'var(--iiui-navy)' }}>{c.title}</strong>
+                  {c.is_lab && <span className="badge badge--warning" style={{ marginLeft: 8 }}>Practical Lab</span>}
                 </td>
                 <td style={{ textAlign: 'center' }}>
                   <span
@@ -260,6 +266,15 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
               Standard university theory/lab course credit weight (e.g. 2, 3, or 4).
             </small>
           </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={Boolean(formData.is_lab)}
+              onChange={(e) => setFormData({ ...formData, is_lab: e.target.checked })}
+            />
+            Dedicated practical lab examination
+          </label>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '1rem' }}>
             <button

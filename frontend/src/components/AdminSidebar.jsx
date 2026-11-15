@@ -4,13 +4,14 @@ import IIUICrest from './IIUICrest.jsx';
 
 const NAV_ITEMS = [
   // Dashboard is temporarily hidden from active portal as requested (code preserved in src/pages/Dashboard.jsx)
-  { id: 'slots', label: 'Time Slots', short: 'TS' },
-  { id: 'rooms', label: 'Rooms & Capacity', short: 'RC' },
-  { id: 'courses', label: 'Courses Directory', short: 'CD' },
-  { id: 'instructors', label: 'Instructor Assignments', short: 'IA' },
-  { id: 'students', label: 'Students & Enrolments', short: 'SE' },
+  { id: 'slots', label: 'Exam Slots', short: 'ED' },
+  { id: 'rooms', label: 'Rooms', short: 'EH' },
+  { id: 'courses', label: 'Courses', short: 'CS' },
+  { id: 'instructors', label: 'Instructors', short: 'FI' },
+  { id: 'students', label: 'Students', short: 'SE' },
   { id: 'datesheet', label: 'Datesheet', short: 'DS' },
-  { id: 'seating', label: 'Seating Plan Matrix', short: 'SP' },
+  { id: 'seating', label: 'Seating Plan', short: 'SP' },
+  { id: 'operations', label: 'Operations', short: 'OP' },
   { id: 'rollslip', label: 'Roll No Slips', short: 'RS' },
 ];
 

@@ -2,6 +2,7 @@
 backend/venv/
 venv/
 .venv/
+backend/*.sqlite3
 __pycache__/
 *.py[cod]
 *$py.class

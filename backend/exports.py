@@ -30,6 +30,7 @@ Seating Excel — official seating sheet per room:
 import datetime
 import io
 import re
+from collections import defaultdict
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -110,8 +111,127 @@ def _apply_border_range(ws, start_row, start_col, end_row, end_col, border=CELL_
             ws.cell(row=r, column=c).border = border
 
 
+def _format_course_code(code):
+    """'CS212' -> 'CS 212', 'GEC102' -> 'GEC 102', 'CS344L' -> 'CS 344L'"""
+    if not code:
+        return ""
+    return re.sub(r"([A-Za-z]+)(\d+)", r"\1 \2", code)
+
+
+TOTAL_COHORT_SECTIONS = {
+    "BSCS F23": ["A", "B", "C"],
+    "BSCS F24": ["A", "B"],
+    "BSCS F25": ["A", "B"],
+    "BSCS F26": ["A", "B"],
+    "BSIT F23": ["A", "B"],
+    "BSIT F24": ["A", "B"],
+    "BSIT F25": ["A", "B"],
+    "BSIT F26": ["A", "B"],
+}
+
+
+def _format_course_cohorts(centries):
+    if not centries:
+        return "—"
+    cohort_map = defaultdict(set)
+    for e in centries:
+        prog = (e.get("program") or "").strip()
+        batch = (e.get("batch") or "").strip()
+        if not prog or not batch:
+            m = re.match(r"(BSCS|BSIT|BSSE|BSDS|MSCS|MSDS|PhD CS)\s+([F|S]\d+)", e.get("batches") or "", re.I)
+            if m:
+                prog = m.group(1).upper()
+                batch = m.group(2).upper()
+        key = f"{prog} {batch}".strip()
+        if not key:
+            continue
+        secs = cohort_map[key]
+        if e.get("sections"):
+            for s in e["sections"]:
+                if s:
+                    secs.add(str(s).strip().upper())
+        elif e.get("section"):
+            for s in re.split(r"[,+/]", str(e["section"])):
+                if s:
+                    secs.add(s.strip().upper())
+        elif e.get("batches"):
+            sec_match = re.search(r"Section\s+([A-Za-z0-9+,\s]+)", e["batches"], re.I)
+            if sec_match:
+                for s in re.split(r"[+,\s]+", sec_match.group(1)):
+                    if s:
+                        secs.add(s.strip().upper())
+
+    if not cohort_map:
+        return centries[0].get("batches") or "—"
+
+    labels = []
+    for key, present_secs in cohort_map.items():
+        known_all = TOTAL_COHORT_SECTIONS.get(key, ["A", "B"])
+        is_all = len(present_secs) >= len(known_all) and all(s in present_secs for s in known_all)
+        sorted_secs = sorted(present_secs)
+        if sorted_secs and not is_all:
+            labels.append(f"{key} (Sec {', '.join(sorted_secs)})")
+        else:
+            labels.append(key)
+
+    return " / ".join(labels) or "—"
+
+
+def _get_entry_cohort(e):
+    p = (e.get("program") or "").strip()
+    b = (e.get("batch") or "").strip()
+    if p and b:
+        return f"{p} {b}".strip()
+    batches = e.get("batches") or ""
+    m = re.match(r"(BSCS|BSIT|BSSE|BSDS|MSCS|MSDS|PhD CS)\s+([F|S]\d+)", batches, re.I)
+    if m:
+        return f"{m.group(1).upper()} {m.group(2).upper()}"
+    cleaned = re.sub(r"\s*Section\s+[A-Za-z0-9]+", "", batches, flags=re.I).strip()
+    return cleaned or batches
+
+
+def _get_course_rooms(centries, slot_id, seating_by_slot):
+    is_lab_course = any(bool(e.get("is_lab")) for e in centries)
+    rooms = []
+    for e in centries:
+        for r in e.get("allocated_rooms", []):
+            is_lab_r = "lab" in str(r).lower()
+            if is_lab_course == is_lab_r and r and r not in rooms:
+                rooms.append(r)
+    if rooms:
+        return rooms
+
+    plan = seating_by_slot.get(slot_id) or {}
+    raw_ccode = re.sub(r"[^a-zA-Z0-9]", "", centries[0].get("course_code", "")).lower()
+    for rm in plan.get("rooms", []):
+        rname = rm.get("room_name", "")
+        is_lab_rm = rm.get("room_type") == "lab" or "lab" in rname.lower()
+        if is_lab_course != is_lab_rm:
+            continue
+        sheet = rm.get("seating_sheet", {})
+        for col in sheet.get("columns", []):
+            p = col.get("paper", "") or col.get("paper_header", "")
+            norm_p = re.sub(r"[^a-zA-Z0-9]", "", p).lower()
+            if raw_ccode and raw_ccode in norm_p:
+                if rname not in rooms:
+                    rooms.append(rname)
+                break
+    if not rooms and plan.get("rooms"):
+        rooms = [
+            rm["room_name"] for rm in plan["rooms"]
+            if (rm.get("room_type") == "lab" or "lab" in rm.get("room_name", "").lower()) == is_lab_course
+        ]
+    return rooms
+
+
+def _clean_pdf_text(text):
+    if text is None:
+        return "-"
+    return str(text).replace("\u2014", "-").replace("\u2013", "-").replace("\u2018", "'").replace("\u2019", "'")
+
+
 # ---------------------------------------------------------------- datesheet
-def datesheet_xlsx(datesheet_entries, seating_by_slot):
+def datesheet_xlsx(datesheet_entries, seating_by_slot, version="1.2"):
     """datesheet_entries: list from datesheet_state['datesheet'].
     seating_by_slot: {slot_id: seating plan dict} for Room No. column.
     Formats exactly to match the official IIUI reference datesheet layout."""
@@ -136,7 +256,7 @@ def datesheet_xlsx(datesheet_entries, seating_by_slot):
         ("INTERNATIONAL ISLAMIC UNIVERSITY", TITLE_FONT, 24),
         ("DEPARTMENT OF COMPUTER SCIENCE & INFORMATION TECHNOLOGY", SUB_FONT, 22),
         ("MIDTERM EXAMS DATESHEET (MALE) - FALL 2026", SUB_FONT, 22),
-        ("Version 1.2", VERSION_FONT, 18),
+        (f"Version {version}", VERSION_FONT, 18),
     ]
     for row_idx, (text, font, height) in enumerate(titles, start=1):
         ws.row_dimensions[row_idx].height = height
@@ -155,14 +275,14 @@ def datesheet_xlsx(datesheet_entries, seating_by_slot):
         c.border = CELL_BORDER
 
     # Set column widths matching reference
-    widths = [20, 38, 32, 22, 18, 16, 26]
+    widths = [20, 42, 38, 24, 22, 16, 26]
     for j, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(j)].width = w
 
     # Row 6: Blank row before data
     ws.row_dimensions[6].height = 10
 
-    # 3. Group entries by date, then by slot
+    # 3. Group entries by date, then by slot, then by course_code
     entries_by_date = {}
     for e in sorted(datesheet_entries, key=lambda x: (x.get("date", ""), x.get("start_time", ""))):
         d = e.get("date", "")
@@ -187,67 +307,93 @@ def datesheet_xlsx(datesheet_entries, seating_by_slot):
             key = (e.get("slot_id", ""), e.get("start_time", ""), e.get("end_time", ""))
             slots_in_day.setdefault(key, []).append(e)
 
-        for (slot_id, start_time, end_time), courses in slots_in_day.items():
-            k = len(courses)
-            total_students = sum(c.get("students", 0) for c in courses)
-            plan = seating_by_slot.get(slot_id) or {}
-
-            # Gather rooms
-            if courses[0].get("allocated_rooms"):
-                rooms_str = ", ".join(courses[0]["allocated_rooms"])
-            elif plan.get("rooms"):
-                rooms_str = ", ".join(r["room_name"] for r in plan["rooms"])
-            else:
-                rooms_str = "—"
-
+        for (slot_id, start_time, end_time), slot_entries in slots_in_day.items():
             time_str = f"{start_time} - {end_time}"
+            total_students_session = sum(e.get("students", 0) for e in slot_entries)
+
+            # Group courses in this session by unique course_code
+            course_map = {}
+            for e in slot_entries:
+                course_map.setdefault(e.get("course_code", ""), []).append(e)
+
+            slot_courses = []
+            for ccode, centries in course_map.items():
+                ctitle = centries[0].get("course_title", "").strip()
+                fmt_code = _format_course_code(ccode)
+                course_name = f"{fmt_code} {ctitle}".strip()
+
+                insts = []
+                for e in centries:
+                    ci = _clean_instructor(e.get("instructor", ""))
+                    for part in [p.strip() for p in ci.split(",")]:
+                        if part and part != "—" and part not in insts:
+                            insts.append(part)
+                inst_str = ", ".join(insts) if insts else "—"
+
+                batch_str = _format_course_cohorts(centries)
+
+                rooms = _get_course_rooms(centries, slot_id, seating_by_slot)
+                room_str = ", ".join(rooms) if rooms else "—"
+                c_students = sum(e.get("students", 0) for e in centries)
+
+                slot_courses.append({
+                    "course_code": ccode,
+                    "course_name": course_name,
+                    "instructor": inst_str,
+                    "batches": batch_str,
+                    "rooms": room_str,
+                    "students": c_students,
+                })
+
+            k = len(slot_courses)
             slot_start_row = curr_row
+            all_same_rooms = len(set(sc["rooms"] for sc in slot_courses)) == 1
 
-            for idx, c_info in enumerate(courses):
+            for idx, sc in enumerate(slot_courses):
                 r = curr_row + idx
-                ws.row_dimensions[r].height = 22
+                ws.row_dimensions[r].height = 24
 
-                # Col 1: Time (only on first row if merged)
+                # Col 1: Time (merged across session)
                 c1 = ws.cell(row=r, column=1, value=time_str if idx == 0 else "")
                 c1.font = DATA_BOLD_FONT
                 c1.alignment = CENTER_ALIGN
                 c1.border = CELL_BORDER
 
                 # Col 2: Course
-                course_text = f"{c_info.get('course_code', '')} {c_info.get('course_title', '')}".strip()
-                c2 = ws.cell(row=r, column=2, value=course_text)
+                c2 = ws.cell(row=r, column=2, value=sc["course_name"])
                 c2.font = DATA_BOLD_FONT
                 c2.alignment = LEFT_ALIGN
                 c2.border = CELL_BORDER
 
                 # Col 3: Instructor
-                inst_text = _clean_instructor(c_info.get("instructor", ""))
-                c3 = ws.cell(row=r, column=3, value=inst_text)
+                c3 = ws.cell(row=r, column=3, value=sc["instructor"])
                 c3.font = DATA_FONT
                 c3.alignment = LEFT_ALIGN
                 c3.border = CELL_BORDER
 
                 # Col 4: Batch(es)
-                batches_text = c_info.get("batches", "").replace(", ", " / ")
-                c4 = ws.cell(row=r, column=4, value=batches_text)
+                c4 = ws.cell(row=r, column=4, value=sc["batches"])
                 c4.font = DATA_FONT
                 c4.alignment = CENTER_ALIGN
                 c4.border = CELL_BORDER
 
                 # Col 5: Room No.
-                c5 = ws.cell(row=r, column=5, value=rooms_str if idx == 0 else "")
+                if all_same_rooms:
+                    c5 = ws.cell(row=r, column=5, value=sc["rooms"] if idx == 0 else "")
+                else:
+                    c5 = ws.cell(row=r, column=5, value=sc["rooms"])
                 c5.font = DATA_FONT
                 c5.alignment = CENTER_ALIGN
                 c5.border = CELL_BORDER
 
                 # Col 6: Students Count
-                c6 = ws.cell(row=r, column=6, value=c_info.get("students", 0))
+                c6 = ws.cell(row=r, column=6, value=sc["students"])
                 c6.font = DATA_FONT
                 c6.alignment = CENTER_ALIGN
                 c6.border = CELL_BORDER
 
                 # Col 7: Total Students per Session
-                c7 = ws.cell(row=r, column=7, value=total_students if idx == 0 else "")
+                c7 = ws.cell(row=r, column=7, value=total_students_session if idx == 0 else "")
                 c7.font = DATA_BOLD_FONT
                 c7.alignment = CENTER_ALIGN
                 c7.border = CELL_BORDER
@@ -255,21 +401,138 @@ def datesheet_xlsx(datesheet_entries, seating_by_slot):
             # Merge columns across session rows if k > 1
             if k > 1:
                 ws.merge_cells(start_row=slot_start_row, start_column=1, end_row=slot_start_row + k - 1, end_column=1)
-                ws.merge_cells(start_row=slot_start_row, start_column=5, end_row=slot_start_row + k - 1, end_column=5)
-                ws.merge_cells(start_row=slot_start_row, start_column=7, end_row=slot_start_row + k - 1, end_column=7)
                 _apply_border_range(ws, slot_start_row, 1, slot_start_row + k - 1, 1)
-                _apply_border_range(ws, slot_start_row, 5, slot_start_row + k - 1, 5)
+
+                if all_same_rooms:
+                    ws.merge_cells(start_row=slot_start_row, start_column=5, end_row=slot_start_row + k - 1, end_column=5)
+                    _apply_border_range(ws, slot_start_row, 5, slot_start_row + k - 1, 5)
+
+                ws.merge_cells(start_row=slot_start_row, start_column=7, end_row=slot_start_row + k - 1, end_column=7)
                 _apply_border_range(ws, slot_start_row, 7, slot_start_row + k - 1, 7)
 
             curr_row += k
 
-            # Blank separator row between sessions
-            ws.row_dimensions[curr_row].height = 10
+            # Blank separator row between sessions (height 9.6 matching reference)
+            ws.row_dimensions[curr_row].height = 9.6
             curr_row += 1
 
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
+    return buf
+
+
+def datesheet_pdf(datesheet_entries, seating_by_slot, version="1.2"):
+    """Landscape A4 PDF export matching the official IIUI reference datesheet."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.add_page()
+
+    # Title Header Block
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 6, "INTERNATIONAL ISLAMIC UNIVERSITY, ISLAMABAD", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 5, "DEPARTMENT OF COMPUTER SCIENCE & INFORMATION TECHNOLOGY", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 5, "MIDTERM EXAMS DATESHEET (MALE) - FALL 2026", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 5, f"Version {version}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    pdf.set_font("Helvetica", "", 8)
+    headings_style = FontFace(emphasis="BOLD", color=255, fill_color=(11, 59, 44))
+    banner_style = FontFace(emphasis="BOLD", color=(11, 59, 44), fill_color=(235, 243, 238))
+
+    col_widths = (28, 62, 65, 38, 38, 20, 26)
+    headers = [
+        "Date  (Day)",
+        "Course",
+        "Instructor",
+        "Batch(es)",
+        "Room No.",
+        "Students Count",
+        "Total Students per Session",
+    ]
+
+    entries_by_date = {}
+    for e in sorted(datesheet_entries, key=lambda x: (x.get("date", ""), x.get("start_time", ""))):
+        d = e.get("date", "")
+        entries_by_date.setdefault(d, []).append(e)
+
+    with pdf.table(col_widths=col_widths, headings_style=headings_style, text_align=("C", "L", "L", "C", "C", "C", "C"), line_height=4.5) as table:
+        hrow = table.row()
+        for h in headers:
+            hrow.cell(h)
+
+        for date_str, day_entries in entries_by_date.items():
+            brow = table.row(style=banner_style)
+            brow.cell(_clean_pdf_text(_fmt_date(date_str)), colspan=7)
+
+            slots_in_day = {}
+            for e in day_entries:
+                key = (e.get("slot_id", ""), e.get("start_time", ""), e.get("end_time", ""))
+                slots_in_day.setdefault(key, []).append(e)
+
+            for (slot_id, start_time, end_time), slot_entries in slots_in_day.items():
+                time_str = f"{start_time} - {end_time}"
+                total_students_session = sum(e.get("students", 0) for e in slot_entries)
+
+                course_map = {}
+                for e in slot_entries:
+                    course_map.setdefault(e.get("course_code", ""), []).append(e)
+
+                slot_courses = []
+                for ccode, centries in course_map.items():
+                    ctitle = centries[0].get("course_title", "").strip()
+                    fmt_code = _format_course_code(ccode)
+                    course_name = _clean_pdf_text(f"{fmt_code} {ctitle}".strip())
+
+                    insts = []
+                    for e in centries:
+                        ci = _clean_instructor(e.get("instructor", ""))
+                        for part in [p.strip() for p in ci.split(",")]:
+                            if part and part != "—" and part not in insts:
+                                insts.append(part)
+                    inst_str = _clean_pdf_text(", ".join(insts) if insts else "-")
+
+                    batch_str = _clean_pdf_text(_format_course_cohorts(centries))
+
+                    rooms = _get_course_rooms(centries, slot_id, seating_by_slot)
+                    room_str = _clean_pdf_text(", ".join(rooms) if rooms else "-")
+                    c_students = sum(e.get("students", 0) for e in centries)
+
+                    slot_courses.append({
+                        "name": course_name,
+                        "inst": inst_str,
+                        "batch": batch_str,
+                        "rooms": room_str,
+                        "students": c_students,
+                    })
+
+                k = len(slot_courses)
+                all_same_rooms = len(set(sc["rooms"] for sc in slot_courses)) == 1
+
+                for idx, sc in enumerate(slot_courses):
+                    r = table.row()
+                    if idx == 0:
+                        r.cell(time_str, rowspan=k)
+                    r.cell(sc["name"])
+                    r.cell(sc["inst"])
+                    r.cell(sc["batch"])
+                    if all_same_rooms:
+                        if idx == 0:
+                            r.cell(sc["rooms"], rowspan=k)
+                    else:
+                        r.cell(sc["rooms"])
+                    r.cell(str(sc["students"]))
+                    if idx == 0:
+                        r.cell(str(total_students_session), rowspan=k)
+
+    buf = io.BytesIO(pdf.output())
     return buf
 
 
@@ -329,10 +592,12 @@ def seating_xlsx(plan):
 
 # ---------------------------------------------------------------- roll slips
 NOTES = [
-    "i. Bring this slip and your University Identity Card in the Examination Hall",
-    "ii. Possession of a Cell Phone/Digital Gadgets in the Examination Hall is an offence as per University code of conduct.",
-    "iii. All Roll No. Slips are issued on a provisional basis. Therefore, appearing in the examination does not automatically entitle a student to claim the result of the respective courses until all eligibility requirements, as per university regulations, are duly fulfilled.",
-    "iv. Students should not appear in the exams if having short attendance (less than 75%) in any course(s) and result shall be cancelled in case they appear in the examination.",
+    "i. Candidates must bring this printed Roll No. Slip and their original University Student ID Card.",
+    "ii. Cell phones, digital gadgets, smartwatches, and programmable electronic devices are strictly prohibited.",
+    "iii. Candidates must be seated at their assigned hall and desk at least 15 minutes before the examination starts.",
+    "iv. Candidates may not leave the examination hall during the examination session.",
+    "v. Borrowing or sharing stationery, calculators, or instruments is prohibited.",
+    "vi. Slips are provisional. Candidates with less than 75% attendance in any course are ineligible; any exam taken despite short attendance will be cancelled.",
 ]
 
 
@@ -357,6 +622,8 @@ def _slip_pdf(pdf, slip):
         ("Faculty/Institute/School:", slip.get("faculty", "Computing and Information Technology")),
         ("Degree Program:", f"{slip.get('program', '')} {slip['batch']}"),
         ("Examination to be held in:", "Midterm Examination Fall-2026"),
+        ("Datesheet Version:", f"Version {slip.get('datesheet_version', '—')}"),
+        ("Slip Status:", slip.get("datesheet_status", "PUBLISHED")),
         ("Issue Date:", slip.get("issue_date", "")),
     ]
     for label, value in fields:
@@ -415,4 +682,61 @@ def roll_slips_pdf(slips):
     pdf.set_auto_page_break(auto=True, margin=15)
     for slip in slips:
         _slip_pdf(pdf, slip)
+    return io.BytesIO(pdf.output())
+
+
+def umc_report_pdf(report):
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(0, 9, "IIUI UNFAIR MEANS CASE (UMC) REPORT", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 7, "Department of Computer Science & Information Technology", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, f"Case #{report['id']}  |  Status: {report['status'].replace('_', ' ').upper()}",
+             align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    fields = [
+        ("Student Roll No.", report["roll_no"]),
+        ("Course", report["course_code"]),
+        ("Slot ID", report["slot_id"]),
+        ("Room ID", report["room_id"]),
+        ("Reporting Invigilator", report["invigilator"]),
+        ("Reported", report["created_at"]),
+    ]
+    for label, value in fields:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, label, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(pdf.epw, 7, str(value))
+
+    sections = [
+        ("Incident Details", report["details"]),
+        ("Student Statement", report.get("student_statement") or "Not recorded"),
+        ("Invigilator Remarks", report.get("invigilator_remarks") or "Not recorded"),
+        ("Instructor Review", report.get("instructor_comments") or "Not reviewed"),
+    ]
+    for label, value in sections:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.multi_cell(pdf.epw, 7, label)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(pdf.epw, 6, str(value))
+
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 7, "Evidence references", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 9)
+    for item in report.get("evidence", []):
+        value = "Captured evidence image (attached to digital case)" if str(item).startswith("data:image/") else str(item)
+        pdf.multi_cell(pdf.epw, 5, value)
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 6, "Digital signature captured with the incident report.",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+             new_x="LMARGIN", new_y="NEXT")
     return io.BytesIO(pdf.output())
