@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Printer,
   Download,
@@ -14,6 +14,14 @@ import {
   Plus,
   Check,
   AlertCircle,
+  UserCheck,
+  Users,
+  Building2,
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 import { seatingService } from '../services/index.js';
@@ -40,10 +48,11 @@ const getCleanTeacher = (inst) => {
   return teachers.length > 0 ? teachers.join(' / ') : cleaned;
 };
 
-export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [] }, courses = [] }) {
+export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [] }, courses = [], students = [], rooms = [] }) {
   const [selectedSlotId, setSelectedSlotId] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
   const [plan, setPlan] = useState(null);
+  const [duties, setDuties] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -61,6 +70,11 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
   const [bulkScope, setBulkScope] = useState('date'); // 'date' | 'all'
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [printScope, setPrintScope] = useState('current'); // 'current' | 'date' | 'all'
+
+  // Venue Directory States (Quick Navigation)
+  const [venueFilter, setVenueFilter] = useState('all'); // 'all' | 'hall' | 'lab'
+  const [venueViewMode, setVenueViewMode] = useState('grid'); // 'grid' | 'table'
+  const [isVenueDirectoryOpen, setIsVenueDirectoryOpen] = useState(true);
 
   const distinctDates = useMemo(() => {
     return Array.from(new Set(slots.map((s) => s.date))).filter(Boolean);
@@ -100,6 +114,244 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
   const currentSlot = useMemo(() => {
     return slots.find((s) => s.id === selectedSlotId);
   }, [slots, selectedSlotId]);
+
+  const activeRooms = useMemo(() => {
+    if (!plan || !plan.rooms) return [];
+    return plan.rooms.filter((r) => isEditMode || (r.seated || 0) > 0);
+  }, [plan, isEditMode]);
+
+  const hallsCount = useMemo(() => {
+    return activeRooms.filter((r) => !(/lab/i.test(r.room_name || '') || r.room_type === 'lab')).length;
+  }, [activeRooms]);
+
+  const labsCount = useMemo(() => {
+    return activeRooms.filter((r) => /lab/i.test(r.room_name || '') || r.room_type === 'lab').length;
+  }, [activeRooms]);
+
+  const filteredRooms = useMemo(() => {
+    if (venueFilter === 'hall') {
+      return activeRooms.filter((r) => !(/lab/i.test(r.room_name || '') || r.room_type === 'lab'));
+    }
+    if (venueFilter === 'lab') {
+      return activeRooms.filter((r) => /lab/i.test(r.room_name || '') || r.room_type === 'lab');
+    }
+    return activeRooms;
+  }, [activeRooms, venueFilter]);
+
+  const totalSeatedInSlot = useMemo(() => {
+    return activeRooms.reduce((sum, r) => sum + (r.seated || 0), 0);
+  }, [activeRooms]);
+
+  const totalStaffedInSlot = useMemo(() => {
+    const currentSlotId = plan?.slot_id || selectedSlotId;
+    const activeRoomIds = new Set(activeRooms.map((r) => r.room_id));
+    const activeRoomNames = new Set(activeRooms.map((r) => (r.room_name || '').toLowerCase().trim()));
+    const matchedDuties = duties.filter(
+      (d) =>
+        d.slot_id === currentSlotId &&
+        (activeRoomIds.has(d.room_id) ||
+          (d.room_name && activeRoomNames.has(d.room_name.toLowerCase().trim())))
+    );
+    return matchedDuties.length;
+  }, [activeRooms, duties, plan, selectedSlotId]);
+
+  // Low-fill detection: rooms where seated ≤ 20% of total usable seats
+  const lowFillRooms = useMemo(() => {
+    return activeRooms.filter((r) => {
+      const totalUsable =
+        Number(r.total_usable_seats) ||
+        (Number(r.capacity || r.rows * r.columns || 0) + Number(r.reserve_capacity || 0));
+      const pct = totalUsable > 0 ? (Number(r.seated || 0) / totalUsable) : 1;
+      return totalUsable > 0 && pct <= 0.2 && Number(r.seated || 0) > 0;
+    });
+  }, [activeRooms]);
+
+  // Per-room state for reserve consolidation actions
+  const [reserveApplied, setReserveApplied] = useState({});
+  const [dismissedLowFill, setDismissedLowFill] = useState(false);
+
+  const overflowRollSet = useMemo(() => {
+    const set = new Set();
+    (students || []).forEach((s) => {
+      const roll = String(s.roll_no || '').trim();
+      const hasOverflow = (s.enrolments || s.courses_enrolled || []).some((e) => {
+        const t = String(e?.type || '').toLowerCase();
+        return t === 'back' || t.includes('back') || t.includes('overflow') || t.includes('repeat');
+      });
+      if (roll && hasOverflow) set.add(roll);
+    });
+    return set;
+  }, [students]);
+
+  const roomMasterMap = useMemo(() => {
+    const map = {};
+    (rooms || []).forEach((r) => {
+      if (r?.id) map[r.id] = r;
+      if (r?.name) map[r.name] = r;
+    });
+    return map;
+  }, [rooms]);
+
+  const handleConsolidateLowFillRoom = async (sourceRoomId) => {
+    if (!plan?.rooms?.length) return;
+    const nextPlan = JSON.parse(JSON.stringify(plan));
+    const source = nextPlan.rooms.find((r) => r.room_id === sourceRoomId);
+    if (!source) return;
+
+    const sourceStudents = [];
+    (source.seating_sheet?.columns || []).forEach((col) => {
+      (col.roll_nos || []).forEach((roll, ri) => {
+        const v = String(roll || '').trim();
+        if (v) {
+          sourceStudents.push({
+            roll: v,
+            paper: col.paper,
+            course_code: col.course_code,
+            instructor: col.instructor,
+            paper_header: col.paper_header,
+          });
+          col.roll_nos[ri] = '';
+        }
+      });
+      col.paper = '—';
+      col.paper_header = '— (Vacant)';
+      col.instructor = '';
+      col.course_code = '';
+    });
+
+    if (sourceStudents.length === 0) {
+      setReserveApplied((prev) => ({ ...prev, [sourceRoomId]: true }));
+      return;
+    }
+
+    const sourceIsLab = /lab/i.test(source.room_name || '') || source.room_type === 'lab';
+    const targets = nextPlan.rooms.filter((r) => {
+      if (r.room_id === sourceRoomId) return false;
+      const targetIsLab = /lab/i.test(r.room_name || '') || r.room_type === 'lab';
+      return sourceIsLab ? targetIsLab : !targetIsLab;
+    });
+    if (!targets.length) {
+      setErrorMsg(
+        sourceIsLab
+          ? 'No other labs are available to absorb this lab. Students in labs must be adjusted within other labs only.'
+          : 'No other examination halls/rooms are available to absorb this room into reserve seats.'
+      );
+      return;
+    }
+
+    const ensureRoomMeta = (room) => {
+      const master = roomMasterMap[room.room_id] || roomMasterMap[room.room_name] || {};
+      const reserve = Number(room.reserve_capacity ?? master.reserve_capacity ?? 0);
+      const baseCap = Number(room.capacity || room.rows * room.columns || 0);
+      room.reserve_capacity = reserve;
+      room.total_usable_seats = baseCap + reserve;
+      room.capacity = baseCap;
+      room.usable_capacity = Number(room.usable_capacity || baseCap);
+      if (!room.seating_sheet || !Array.isArray(room.seating_sheet.columns)) {
+        room.seating_sheet = { columns: [] };
+      }
+    };
+    targets.forEach(ensureRoomMeta);
+    ensureRoomMeta(source);
+
+    let studentIdx = 0;
+
+    const tryPlaceInRoom = (room) => {
+      const cols = room.seating_sheet.columns || [];
+      if (!cols.length) return;
+      const maxRowsNow = Math.max(room.rows || 0, ...cols.map((c) => (c.roll_nos || []).length), 0);
+      const totalUsable = Number(room.total_usable_seats || (room.capacity + (room.reserve_capacity || 0)));
+      let seatedNow = cols.reduce((acc, c) => acc + (c.roll_nos || []).filter((x) => String(x || '').trim()).length, 0);
+
+      // Fill existing empty cells first
+      for (let r = 0; r < maxRowsNow && studentIdx < sourceStudents.length; r++) {
+        for (let c = 0; c < cols.length && studentIdx < sourceStudents.length; c++) {
+          const col = cols[c];
+          while ((col.roll_nos || []).length <= r) col.roll_nos.push('');
+          if (!String(col.roll_nos[r] || '').trim()) {
+            const st = sourceStudents[studentIdx++];
+            col.roll_nos[r] = st.roll;
+            if (!col.paper || col.paper === '—' || String(col.paper).includes('Vacant')) {
+              col.paper = st.paper;
+              col.course_code = st.course_code;
+              col.instructor = st.instructor;
+              col.paper_header = st.paper_header;
+            }
+            seatedNow += 1;
+          }
+        }
+      }
+
+      // Expand rows into reserve capacity if needed
+      while (studentIdx < sourceStudents.length && seatedNow < totalUsable) {
+        const newRowIdx = Math.max(room.rows || 0, ...cols.map((c) => (c.roll_nos || []).length), 0);
+        room.rows = newRowIdx + 1;
+        room.capacity = Number(room.capacity || 0) + cols.length;
+        room.usable_capacity = Number(room.usable_capacity || 0) + cols.length;
+        for (let c = 0; c < cols.length && studentIdx < sourceStudents.length && seatedNow < totalUsable; c++) {
+          const col = cols[c];
+          while ((col.roll_nos || []).length <= newRowIdx) col.roll_nos.push('');
+          const st = sourceStudents[studentIdx++];
+          col.roll_nos[newRowIdx] = st.roll;
+          if (!col.paper || col.paper === '—' || String(col.paper).includes('Vacant')) {
+            col.paper = st.paper;
+            col.course_code = st.course_code;
+            col.instructor = st.instructor;
+            col.paper_header = st.paper_header;
+          }
+          seatedNow += 1;
+        }
+      }
+
+      room.seated = cols.reduce((acc, c) => acc + (c.roll_nos || []).filter((x) => String(x || '').trim()).length, 0);
+      room.utilisation_pct =
+        room.usable_capacity > 0 ? Math.round((room.seated / room.usable_capacity) * 1000) / 10 : 0;
+    };
+
+    for (const target of targets) {
+      if (studentIdx >= sourceStudents.length) break;
+      tryPlaceInRoom(target);
+    }
+
+    source.seated = 0;
+    source.utilisation_pct = 0;
+
+    if (studentIdx < sourceStudents.length) {
+      setErrorMsg(
+        `Could not consolidate all students from ${source.room_name}. ${sourceStudents.length - studentIdx} student(s) remain; use Edit Seating Plan to place them manually.`
+      );
+      // Put remaining students back into source first column(s) so none are lost
+      let backIdx = studentIdx;
+      const cols = source.seating_sheet?.columns || [];
+      if (cols.length) {
+        let r = 0;
+        while (backIdx < sourceStudents.length) {
+          for (let c = 0; c < cols.length && backIdx < sourceStudents.length; c++) {
+            const col = cols[c];
+            while ((col.roll_nos || []).length <= r) col.roll_nos.push('');
+            const st = sourceStudents[backIdx++];
+            col.roll_nos[r] = st.roll;
+            col.paper = st.paper;
+            col.course_code = st.course_code;
+            col.instructor = st.instructor;
+            col.paper_header = st.paper_header;
+          }
+          r += 1;
+        }
+        source.seated = sourceStudents.length - studentIdx;
+      }
+      setPlan(nextPlan);
+      setHasChanges(true);
+      return;
+    }
+
+    setPlan(nextPlan);
+    setHasChanges(true);
+    setReserveApplied((prev) => ({ ...prev, [sourceRoomId]: true }));
+    setSaveSuccessMsg(
+      `Consolidated ${sourceStudents.length} student(s) from ${source.room_name} into reserve/available seats of other halls. Save changes to sync datesheet and invigilation roster.`
+    );
+  };
 
   const handleDateChange = (newDate) => {
     if (isEditMode && hasChanges) {
@@ -167,11 +419,24 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
     }
   };
 
+  const fetchDuties = useCallback(async () => {
+    try {
+      const res = await fetch('/api/invigilation/duties');
+      if (res.ok) {
+        const data = await res.json();
+        setDuties(Array.isArray(data) ? data : []);
+      }
+    } catch {
+      // duty roster may be empty initially
+    }
+  }, []);
+
   useEffect(() => {
     if (selectedSlotId) {
       fetchPlan(selectedSlotId);
+      fetchDuties();
     }
-  }, [selectedSlotId]);
+  }, [selectedSlotId, fetchDuties]);
 
   const handleRegenerate = async () => {
     if (!selectedSlotId) return;
@@ -494,9 +759,38 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
       const maxRows = Math.max(room.rows || 0, ...sheet.columns.map((c) => c.roll_nos.length), 0);
       const isRoomEmpty = (room.seated || 0) === 0;
 
+      const reserveCount = Math.max(0, Number(room.reserve_capacity || 0));
+      const emptyCells = [];
+      sheet.columns.forEach((col, colIdx) => {
+        for (let ri = 0; ri < maxRows; ri++) {
+          const rollVal = String((col.roll_nos || [])[ri] || '').trim();
+          if (!rollVal) emptyCells.push(`${colIdx}:${ri}`);
+        }
+      });
+      const reservedSet = new Set(
+        reserveCount > 0 ? emptyCells.slice(Math.max(0, emptyCells.length - reserveCount)) : []
+      );
+
+      const currentSlotId = planData.slot_id || selectedSlotId;
+      const dutyMatches = duties.filter(
+        (d) =>
+          d.slot_id === currentSlotId &&
+          (d.room_id === room.room_id ||
+            (d.room_name &&
+              room.room_name &&
+              d.room_name.trim().toLowerCase() === room.room_name.trim().toLowerCase()))
+      );
+      const roomInvigilators =
+        dutyMatches.length > 0
+          ? dutyMatches
+          : (room.invigilation || []).length > 0
+            ? room.invigilation
+            : (room.invigilators || []).map((name) => ({ instructor: name, duty_type: 'hall' }));
+
       return (
         <div
           key={`${planData.slot_id || planData.date}-${room.room_id}`}
+          id={`room-sheet-${room.room_id}`}
           className="dcs-seating-sheet"
           style={isRoomEmpty && isEditMode ? { opacity: 0.65, border: '2px dashed #f87171' } : undefined}
         >
@@ -508,7 +802,36 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
             <p>
               <strong>Date:</strong> {planData.date} &bull; <strong>Time Slot:</strong> {planData.start_time} &ndash;{' '}
               {planData.end_time} &bull; <strong>Room:</strong> {room.room_name}
+              {' '}&bull; <strong>Capacity:</strong>{' '}
+              {Number(room.capacity || (room.rows || 0) * (room.columns || 0))} Usable
+              {Number(room.reserve_capacity || 0) > 0
+                ? ` + ${Number(room.reserve_capacity || 0)} Reserved`
+                : ''}
             </p>
+
+            {/* Official Invigilator Assignment Strip */}
+            <div className="dcs-seating-sheet__invigilation-bar">
+              <span className="dcs-seating-sheet__invig-title">
+                <UserCheck size={14} style={{ verticalAlign: 'text-bottom', marginRight: 5 }} />
+                <strong>Invigilator(s):</strong>
+              </span>
+              {roomInvigilators.length > 0 ? (
+                <div className="dcs-seating-sheet__invig-list">
+                  {roomInvigilators.map((inv, idx) => (
+                    <span key={inv.id || idx} className="dcs-invig-pill">
+                      <strong>{inv.instructor}</strong>
+                      <span className={`dcs-invig-type ${inv.duty_type === 'own_subject' ? 'dcs-invig-type--own' : 'dcs-invig-type--hall'}`}>
+                        {inv.duty_type === 'own_subject' ? 'Course Teacher' : 'Invigilator'}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span className="dcs-seating-sheet__invig-empty">
+                  Not assigned yet (Generate roster in Operations)
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Interactive Room Edit Bar in Edit Mode */}
@@ -655,24 +978,40 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                         selectedSeat.rowIdx === ri;
                       const isTargetVacant = selectedSeat && isVacant;
 
+                      const isOverflow = rollVal && overflowRollSet.has(rollVal);
+                      const isReservedSeat = !rollVal && reservedSet.has(`${colIdx}:${ri}`);
                       let cellClass = '';
                       if (isEditMode) {
                         cellClass += ' seat-cell--editable';
                         if (isSelected) cellClass += ' seat-cell--selected';
                         else if (isTargetVacant) cellClass += ' seat-cell--vacant-target';
                       }
+                      if (isOverflow) {
+                        cellClass += ' student-overflow-cell';
+                      }
+                      if (isReservedSeat) {
+                        cellClass += ' seat-cell--reserved';
+                      }
 
                       return (
                         <td
                           key={col.column_no}
-                          className={cellClass}
+                          className={cellClass.trim()}
                           onClick={() => isEditMode && handleCellClick(roomIdx, colIdx, ri)}
                           style={{
                             borderRight: '1px solid #cbd5e1',
-                            fontWeight: rollVal ? 600 : 400,
+                            fontWeight: rollVal ? 700 : 400,
                             fontSize: '0.74rem',
-                            fontFamily: 'monospace',
-                            background: isSelected ? undefined : (isVacant ? '#fafafa' : 'transparent'),
+                            fontFamily: rollVal || isReservedSeat ? 'monospace' : 'inherit',
+                            background: isSelected
+                              ? undefined
+                              : isOverflow
+                                ? '#fff1f2'
+                                : isReservedSeat
+                                  ? '#f8fafc'
+                                  : (isVacant ? '#fafafa' : 'transparent'),
+                            color: isOverflow ? '#b91c1c' : isReservedSeat ? '#64748b' : undefined,
+                            boxShadow: isOverflow ? 'inset 0 0 0 2px #ef4444' : isReservedSeat ? 'inset 0 0 0 1px dashed #94a3b8' : undefined,
                             padding: '4px 6px',
                             minWidth: '85px',
                             maxWidth: '120px',
@@ -682,22 +1021,69 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                           title={
                             isEditMode
                               ? rollVal
-                                ? `Click to select ${rollVal} for move/swap`
+                                ? `${isOverflow ? 'Repeat/Backlog candidate: ' : ''}Click to select ${rollVal} for move/swap`
                                 : selectedSeat
-                                ? `Click to move ${selectedSeat.roll} here`
-                                : 'Empty seat'
-                              : undefined
+                                  ? `Click to move ${selectedSeat.roll} here${isReservedSeat ? ' (reserved seat)' : ''}`
+                                  : isReservedSeat
+                                    ? 'Reserved seat (available for administration if needed)'
+                                    : 'Empty seat'
+                              : isOverflow && rollVal
+                                ? `Repeat/Backlog candidate: ${rollVal}`
+                                : isReservedSeat
+                                  ? 'Reserved seat (available for administration if needed)'
+                                  : undefined
                           }
                         >
-                          {rollVal || (isEditMode ? <span style={{ color: '#cbd5e1', fontSize: '0.68rem' }}>·</span> : '')}
+                          {rollVal || (isReservedSeat ? <span style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.02em' }}>Reserved</span> : (isEditMode ? <span style={{ color: '#cbd5e1', fontSize: '0.68rem' }}>·</span> : ''))}
                         </td>
                       );
                     })}
                   </tr>
                 ))}
+                {reserveCount > 0 && (() => {
+                  const colCount = sheet.columns.length || 1;
+                  const reserveRowsCount = Math.ceil(reserveCount / colCount);
+                  return Array.from({ length: reserveRowsCount }, (_, rr) => (
+                    <tr key={`reserve-row-${rr}`} className="dcs-reserve-grid-row">
+                      {sheet.columns.map((col, colIdx) => {
+                        const reserveIndex = rr * colCount + colIdx;
+                        const isReserveCell = reserveIndex < reserveCount;
+                        return (
+                          <td
+                            key={`reserve-${col.column_no}-${rr}`}
+                            style={{
+                              borderRight: '1px solid #cbd5e1',
+                              fontSize: '0.72rem',
+                              fontFamily: 'monospace',
+                              fontWeight: 700,
+                              background: isReserveCell ? '#f8fafc' : '#fafafa',
+                              color: isReserveCell ? '#475569' : '#cbd5e1',
+                              boxShadow: isReserveCell ? 'inset 0 0 0 1px dashed #94a3b8' : undefined,
+                              padding: '4px 6px',
+                              minWidth: '85px',
+                              maxWidth: '120px',
+                              height: '26px',
+                              textAlign: 'center',
+                            }}
+                            title={isReserveCell ? `Reserved seat ${reserveIndex + 1} (available for administration if needed)` : ''}
+                          >
+                            {isReserveCell ? `Reserved ${String(reserveIndex + 1).padStart(2, '0')}` : ''}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ));
+                })()}
               </tbody>
             </table>
           </div>
+
+          {Number(room.reserve_capacity || 0) > 0 && (
+            <div className="dcs-reserve-panel" style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
+              <strong style={{ color: 'var(--iiui-navy)' }}>Reserve seats shown in grid:</strong>{' '}
+              {Number(room.reserve_capacity || 0)} seat{Number(room.reserve_capacity || 0) === 1 ? '' : 's'} labeled &quot;Reserved&quot; and kept available for administration if needed.
+            </div>
+          )}
         </div>
       );
     });
@@ -975,6 +1361,337 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
             </button>
           </div>
         </div>
+      )}
+
+      {/* Slot Venues & Staffing Directory (Executive Overview & Quick Navigation) */}
+      {plan && plan.rooms && plan.rooms.length > 0 && !bulkPlans.length && (
+        <>
+          {/* Low-fill Admin Notice */}
+          {lowFillRooms.length > 0 && !dismissedLowFill && (
+            <div className="low-fill-notice no-print">
+              <div className="low-fill-notice__header">
+                <div className="low-fill-notice__icon">⚠️</div>
+                <div>
+                  <strong>Low Seat Utilisation Detected</strong>
+                  <p>
+                    The following venue(s) have 20% or fewer seats filled. Hall/room students can be consolidated into reserve/available seats of other halls only (optional), and lab students can be adjusted within other labs only.
+                  </p>
+                </div>
+                <button className="low-fill-notice__dismiss" onClick={() => setDismissedLowFill(true)} title="Dismiss">✕</button>
+              </div>
+              <div className="low-fill-notice__rooms">
+                {lowFillRooms.map((r) => {
+                  const totalUsable =
+                    Number(r.total_usable_seats) ||
+                    (Number(r.capacity || r.rows * r.columns || 0) + Number(r.reserve_capacity || 0));
+                  const pct = totalUsable > 0 ? Math.round((Number(r.seated || 0) / totalUsable) * 100) : 0;
+                  const applied = reserveApplied[r.room_id];
+                  const isLabRoom = /lab/i.test(r.room_name || '') || r.room_type === 'lab';
+                  const otherAvailable = activeRooms
+                    .filter((room) => {
+                      if (room.room_id === r.room_id) return false;
+                      const targetIsLab = /lab/i.test(room.room_name || '') || room.room_type === 'lab';
+                      return isLabRoom ? targetIsLab : !targetIsLab;
+                    })
+                    .reduce((sum, room) => {
+                      const tu = Number(room.total_usable_seats) || (Number(room.capacity || 0) + Number(room.reserve_capacity || 0));
+                      return sum + Math.max(0, tu - Number(room.seated || 0));
+                    }, 0);
+                  return (
+                    <div key={r.room_id} className="low-fill-notice__room-row">
+                      <div className="low-fill-notice__room-info">
+                        <strong>{r.room_name}</strong>
+                        <span className="low-fill-notice__pct">{r.seated || 0} / {totalUsable} seats ({pct}% filled)</span>
+                        <span className="low-fill-notice__reserve-tag">
+                          +{otherAvailable} available seat{otherAvailable === 1 ? '' : 's'} in other {isLabRoom ? 'labs' : 'halls/rooms'}
+                        </span>
+                      </div>
+                      <button
+                        className={`btn btn--sm ${applied ? 'btn--success' : 'btn--outline'}`}
+                        onClick={() => handleConsolidateLowFillRoom(r.room_id)}
+                        disabled={applied || isSaving}
+                        title={
+                          applied
+                            ? 'Consolidation applied (save to persist)'
+                            : isLabRoom
+                              ? 'Move students into other labs only and vacate this lab'
+                              : 'Move students into reserve/available seats of other halls and vacate this room'
+                        }
+                      >
+                        {applied ? '✓ Consolidation Prepared' : 'Consolidate into Reserve Seats (Vacate Room)'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="slot-venues-directory no-print">
+          <div className="slot-venues-directory__header">
+            <div className="slot-venues-directory__title-group">
+              <h3 className="slot-venues-directory__title">
+                <Layers size={17} style={{ color: 'var(--iiui-green)' }} />
+                Slot Venues &amp; Invigilation Directory
+              </h3>
+              <div className="slot-venues-directory__stats">
+                <span className="slot-venues-directory__stat-pill slot-venues-directory__stat-pill--navy">
+                  <Building2 size={12} />
+                  {activeRooms.length} Active Venues ({hallsCount} Halls/Rooms, {labsCount} Labs)
+                </span>
+                <span className="slot-venues-directory__stat-pill slot-venues-directory__stat-pill--green">
+                  <Users size={12} />
+                  {totalSeatedInSlot} Students Seated
+                </span>
+                <span className="slot-venues-directory__stat-pill">
+                  <UserCheck size={12} />
+                  {totalStaffedInSlot} Duties Assigned
+                </span>
+              </div>
+            </div>
+
+            <div className="slot-venues-directory__controls">
+              {/* Category Filter Pills */}
+              <div className="venue-filter-pills">
+                <button
+                  type="button"
+                  className={`venue-filter-pill-btn ${venueFilter === 'all' ? 'venue-filter-pill-btn--active' : ''}`}
+                  onClick={() => setVenueFilter('all')}
+                >
+                  All ({activeRooms.length})
+                </button>
+                <button
+                  type="button"
+                  className={`venue-filter-pill-btn ${venueFilter === 'hall' ? 'venue-filter-pill-btn--active' : ''}`}
+                  onClick={() => setVenueFilter('hall')}
+                >
+                  Halls ({hallsCount})
+                </button>
+                <button
+                  type="button"
+                  className={`venue-filter-pill-btn ${venueFilter === 'lab' ? 'venue-filter-pill-btn--active' : ''}`}
+                  onClick={() => setVenueFilter('lab')}
+                >
+                  Labs ({labsCount})
+                </button>
+              </div>
+
+              {/* View Switch: Grid vs Table */}
+              <div className="venue-view-toggle">
+                <button
+                  type="button"
+                  className={`venue-view-toggle-btn ${venueViewMode === 'grid' ? 'venue-view-toggle-btn--active' : ''}`}
+                  onClick={() => setVenueViewMode('grid')}
+                  title="Card Grid View"
+                >
+                  <LayoutGrid size={14} />
+                </button>
+                <button
+                  type="button"
+                  className={`venue-view-toggle-btn ${venueViewMode === 'table' ? 'venue-view-toggle-btn--active' : ''}`}
+                  onClick={() => setVenueViewMode('table')}
+                  title="Table View"
+                >
+                  <List size={14} />
+                </button>
+              </div>
+
+              {/* Collapse/Expand Toggle */}
+              <button
+                type="button"
+                className="btn btn--sm btn--outline"
+                style={{ padding: '3px 8px', fontSize: '0.74rem', gap: '3px' }}
+                onClick={() => setIsVenueDirectoryOpen(!isVenueDirectoryOpen)}
+                title={isVenueDirectoryOpen ? 'Collapse Directory' : 'Expand Directory'}
+              >
+                {isVenueDirectoryOpen ? (
+                  <>
+                    <span>Hide</span>
+                    <ChevronUp size={13} />
+                  </>
+                ) : (
+                  <>
+                    <span>Show</span>
+                    <ChevronDown size={13} />
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {isVenueDirectoryOpen && (
+            <div className="slot-venues-directory__body">
+              {venueViewMode === 'grid' ? (
+                <div className="slot-venues-grid">
+                  {filteredRooms.map((r) => {
+                    const currentSlotId = plan.slot_id || selectedSlotId;
+                    const rDuties = duties.filter(
+                      (d) =>
+                        d.slot_id === currentSlotId &&
+                        (d.room_id === r.room_id ||
+                          (d.room_name &&
+                            r.room_name &&
+                            d.room_name.trim().toLowerCase() === r.room_name.trim().toLowerCase()))
+                    );
+                    const isLab = /lab/i.test(r.room_name || '') || r.room_type === 'lab';
+
+                    return (
+                      <a
+                        key={r.room_id}
+                        href={`#room-sheet-${r.room_id}`}
+                        className="slot-venue-card"
+                        title={`Click to jump to ${r.room_name} seating sheet`}
+                      >
+                        <div className="slot-venue-card__top">
+                          <div className="slot-venue-card__title-row">
+                            <span className="slot-venue-card__name">{r.room_name}</span>
+                            <span
+                              className={`slot-venue-card__type ${
+                                isLab ? 'slot-venue-card__type--lab' : 'slot-venue-card__type--hall'
+                              }`}
+                            >
+                              {isLab ? 'Computer Lab' : 'Hall'}
+                            </span>
+                          </div>
+                          <span className="slot-venue-card__seated">
+                            <Users size={12} />
+                            <strong>{r.seated || 0}</strong> seated
+                          </span>
+                        </div>
+
+                        <div className="slot-venue-card__staff-box">
+                          <div className="slot-venue-card__staff-heading">
+                            <UserCheck size={12} style={{ color: '#059669' }} />
+                            <span>Invigilator(s)</span>
+                          </div>
+                          <div className="slot-venue-card__staff-list">
+                            {rDuties.length > 0 ? (
+                              rDuties.map((d, dIdx) => (
+                                <div key={d.id || dIdx} className="slot-venue-card__staff-row">
+                                  <span className="slot-venue-card__staff-name" title={d.instructor}>
+                                    {d.instructor}
+                                  </span>
+                                  <span
+                                    className={`slot-venue-card__staff-role ${
+                                      d.duty_type === 'own_subject'
+                                        ? 'slot-venue-card__staff-role--own'
+                                        : 'slot-venue-card__staff-role--hall'
+                                    }`}
+                                  >
+                                    {d.duty_type === 'own_subject' ? 'Course Teacher' : 'Invigilator'}
+                                  </span>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="slot-venue-card__staff-empty">
+                                <AlertCircle size={12} />
+                                <span>No invigilator assigned</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="slot-venue-card__footer">
+                          <span>Jump to sheet &darr;</span>
+                          <ChevronRight size={13} className="slot-venue-card__arrow" />
+                        </div>
+                      </a>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="slot-venues-table-wrapper">
+                  <table className="slot-venues-table">
+                    <thead>
+                      <tr>
+                        <th>Venue Name</th>
+                        <th>Category</th>
+                        <th>Seated Count</th>
+                        <th>Assigned Invigilators &amp; Role</th>
+                        <th style={{ textAlign: 'right' }}>Quick Jump</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredRooms.map((r) => {
+                        const currentSlotId = plan.slot_id || selectedSlotId;
+                        const rDuties = duties.filter(
+                          (d) =>
+                            d.slot_id === currentSlotId &&
+                            (d.room_id === r.room_id ||
+                              (d.room_name &&
+                                r.room_name &&
+                                d.room_name.trim().toLowerCase() === r.room_name.trim().toLowerCase()))
+                        );
+                        const isLab = /lab/i.test(r.room_name || '') || r.room_type === 'lab';
+
+                        return (
+                          <tr key={r.room_id}>
+                            <td>
+                              <strong style={{ color: 'var(--iiui-navy)', fontSize: '0.88rem' }}>
+                                {r.room_name}
+                              </strong>
+                            </td>
+                            <td>
+                              <span
+                                className={`slot-venue-card__type ${
+                                  isLab ? 'slot-venue-card__type--lab' : 'slot-venue-card__type--hall'
+                                }`}
+                              >
+                                {isLab ? 'Computer Lab' : 'Exam Hall'}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="slot-venue-card__seated">
+                                <Users size={12} />
+                                <strong>{r.seated || 0}</strong> seated
+                              </span>
+                            </td>
+                            <td>
+                              {rDuties.length > 0 ? (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                                  {rDuties.map((d, dIdx) => (
+                                    <span
+                                      key={d.id || dIdx}
+                                      className="dcs-invig-pill"
+                                      style={{ fontSize: '0.74rem', padding: '2px 7px' }}
+                                    >
+                                      <strong>{d.instructor}</strong>
+                                      <span
+                                        className={`dcs-invig-type ${
+                                          d.duty_type === 'own_subject' ? 'dcs-invig-type--own' : 'dcs-invig-type--hall'
+                                        }`}
+                                      >
+                                        {d.duty_type === 'own_subject' ? 'Course Teacher' : 'Invigilator'}
+                                      </span>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span style={{ color: '#b45309', fontSize: '0.76rem', fontStyle: 'italic' }}>
+                                  No invigilator assigned
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <a
+                                href={`#room-sheet-${r.room_id}`}
+                                className="btn btn--sm btn--outline"
+                                style={{ fontSize: '0.74rem', padding: '3px 8px' }}
+                              >
+                                Jump to Sheet &darr;
+                              </a>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        </>
       )}
 
       {/* DCS Seating Sheets */}

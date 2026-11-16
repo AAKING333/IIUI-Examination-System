@@ -13,6 +13,19 @@ os.environ["EXAM_PORTAL_DB"] = str(Path(_database_directory.name) / "exam-test.s
 import data
 import main
 from database import DATABASE_PATH, SQLiteDatabase
+from fastapi import HTTPException
+from app.services.invigilation_service import (
+    create_manual_duty,
+    delete_manual_duty,
+    generate_duties,
+    get_faculty_workload,
+    get_roster_summary,
+    is_ecr_member,
+    list_duties,
+    normalize_name,
+    recalculate_duties,
+    update_manual_duty,
+)
 
 
 class ExamWorkflowTests(unittest.TestCase):
@@ -261,6 +274,196 @@ class ExamWorkflowTests(unittest.TestCase):
         pdf_bytes = buf_p.getvalue()
         self.assertTrue(len(pdf_bytes) > 2000, "PDF export should produce valid document bytes")
         self.assertTrue(pdf_bytes.startswith(b"%PDF"), "Exported PDF must have valid PDF header")
+
+    def test_invigilation_roster_enforces_staffing_ecr_and_cap(self):
+        main.generate_datesheet_endpoint()
+        result = generate_duties([])
+        self.assertGreater(result["generated_count"], 0)
+
+        summary = get_roster_summary()
+        self.assertEqual(summary["stats"]["error_count"], 0)
+        self.assertEqual(summary["stats"]["understaffed_rooms"], 0)
+        self.assertEqual(summary["stats"]["overstaffed_rooms"], 0)
+
+        for slot in summary["slots"]:
+            for room in slot["rooms"]:
+                if room["is_lab"]:
+                    expected = 1
+                elif room["room_name"] == "Room 26":
+                    expected = 3
+                elif room["room_name"] == "Room 18":
+                    expected = 2
+                else:
+                    expected = 1
+                self.assertEqual(room["required"], expected, room["room_name"])
+                self.assertEqual(room["assigned"], expected, room["room_name"])
+
+        hall_instructors = defaultdict(set)
+        counted = Counter()
+        for duty in summary["duties"]:
+            self.assertEqual(
+                duty["is_counted"],
+                0 if duty["duty_type"] == "own_subject" else 1,
+            )
+            if duty["is_counted"]:
+                counted[normalize_name(duty["instructor"])] += 1
+            if duty["room_type"] != "lab":
+                self.assertFalse(
+                    is_ecr_member(duty["instructor"]),
+                    f"ECR member {duty['instructor']} assigned to a hall",
+                )
+                normalized = normalize_name(duty["instructor"])
+                self.assertNotIn(
+                    normalized, hall_instructors[duty["slot_id"]],
+                    f"{duty['instructor']} assigned to two halls in {duty['slot_id']}",
+                )
+                hall_instructors[duty["slot_id"]].add(normalized)
+
+        self.assertTrue(
+            all(value <= 4 for value in counted.values()),
+            f"Extra-duty cap violated: {dict(counted)}",
+        )
+
+    def test_invigilation_recalculation_is_deterministic(self):
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        first = sorted(
+            (duty["slot_id"], duty["room_id"], normalize_name(duty["instructor"]), duty["duty_type"])
+            for duty in list_duties()
+        )
+        generate_duties([], preserve_manual=False)
+        second = sorted(
+            (duty["slot_id"], duty["room_id"], normalize_name(duty["instructor"]), duty["duty_type"])
+            for duty in list_duties()
+        )
+        self.assertEqual(first, second)
+
+    def test_invigilation_recalculation_can_target_one_slot(self):
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        before = list_duties()
+        target_slot = before[0]["slot_id"]
+        other_before = sorted(
+            (duty["slot_id"], duty["room_id"], normalize_name(duty["instructor"]))
+            for duty in before
+            if duty["slot_id"] != target_slot
+        )
+
+        result = recalculate_duties([target_slot], preserve_manual=False)
+        self.assertGreater(result["generated_count"], 0)
+
+        after = list_duties()
+        other_after = sorted(
+            (duty["slot_id"], duty["room_id"], normalize_name(duty["instructor"]))
+            for duty in after
+            if duty["slot_id"] != target_slot
+        )
+        self.assertEqual(other_before, other_after)
+        self.assertTrue(any(duty["slot_id"] == target_slot for duty in after))
+
+        summary = get_roster_summary()
+        self.assertEqual(summary["stats"]["error_count"], 0)
+        self.assertEqual(summary["stats"]["understaffed_rooms"], 0)
+        self.assertEqual(summary["stats"]["overstaffed_rooms"], 0)
+
+    def test_manual_override_is_preserved_by_recalculation(self):
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        summary = get_roster_summary()
+        duty = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab" and item["required_invigilators"] == 1
+        )
+        used = {
+            normalize_name(item["instructor"])
+            for item in summary["duties"]
+            if item["slot_id"] == duty["slot_id"]
+        }
+        candidates = [
+            faculty["name"] for faculty in get_faculty_workload()
+            if not faculty["is_ecr"]
+            and faculty["remaining_extra_capacity"] > 0
+            and faculty["name"] != duty["instructor"]
+            and normalize_name(faculty["name"]) not in used
+        ]
+        self.assertTrue(candidates)
+
+        updated = None
+        last_error = None
+        for candidate in candidates:
+            try:
+                updated = update_manual_duty(
+                    duty["id"], {"instructor": candidate, "notes": "manual swap"},
+                )
+                break
+            except HTTPException as exc:
+                last_error = exc
+        self.assertIsNotNone(updated, f"Could not find a valid replacement: {last_error}")
+        self.assertEqual(updated["source"], "manual")
+        self.assertEqual(updated["instructor"], candidate)
+        self.assertEqual(updated["notes"], "manual swap")
+
+        result = recalculate_duties([], preserve_manual=True)
+        self.assertGreaterEqual(result["preserved_manual_count"], 1)
+        persisted = next(item for item in list_duties() if item["id"] == duty["id"])
+        self.assertEqual(persisted["source"], "manual")
+        self.assertEqual(persisted["instructor"], candidate)
+        self.assertEqual(persisted["notes"], "manual swap")
+
+        recalculate_duties([], preserve_manual=False)
+        self.assertFalse(any(item["id"] == duty["id"] for item in list_duties()))
+
+    def test_manual_override_rejects_hard_rule_violations(self):
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        summary = get_roster_summary()
+        duty = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab" and item["required_invigilators"] == 1
+        )
+
+        ecr_name = next(item["name"] for item in get_faculty_workload() if item["is_ecr"])
+        with self.assertRaises(HTTPException) as context:
+            update_manual_duty(duty["id"], {"instructor": ecr_name})
+        self.assertEqual(context.exception.status_code, 422)
+
+        same_slot = next(
+            item for item in summary["duties"]
+            if item["slot_id"] == duty["slot_id"]
+            and item["id"] != duty["id"]
+            and item["room_type"] != "lab"
+        )
+        with self.assertRaises(HTTPException):
+            update_manual_duty(duty["id"], {"instructor": same_slot["instructor"]})
+
+        with self.assertRaises(HTTPException) as context:
+            delete_manual_duty(duty["id"])
+        self.assertEqual(context.exception.status_code, 409)
+
+        full_slot = next(
+            slot for slot in summary["slots"]
+            if any(room["assigned"] == room["required"] for room in slot["rooms"])
+        )
+        full_room = next(
+            room for room in full_slot["rooms"] if room["assigned"] == room["required"]
+        )
+        candidate = next(
+            item["name"] for item in get_faculty_workload()
+            if not item["is_ecr"] and item["remaining_extra_capacity"] > 0
+        )
+        with self.assertRaises(HTTPException):
+            create_manual_duty({
+                "slot_id": full_slot["slot_id"],
+                "room_id": full_room["room_id"],
+                "instructor": candidate,
+            })
+
+    def test_datesheet_regeneration_invalidates_invigilation_roster(self):
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        self.assertTrue(list_duties())
+        main.generate_datesheet_endpoint()
+        self.assertEqual(list_duties(), [])
 
     def test_custom_seating_plan_edit_and_datesheet_sync(self):
         import copy

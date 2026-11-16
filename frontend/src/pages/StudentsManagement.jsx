@@ -215,7 +215,7 @@ export default function StudentsManagement({
         <div>
           <h1 className="itms-dash__pageTitle">Students &amp; Course Enrolments Management</h1>
           <p className="itms-dash__pageSub">
-            Manage student registrations, programs, batches, sections, and course enrolments with Regular &amp; Back-paper designations.
+            Manage student registrations, programs, batches, sections, and course enrolments with Regular and Repeat/Backlog designations.
           </p>
         </div>
         <div className="toolbar__actions">
@@ -236,7 +236,7 @@ export default function StudentsManagement({
 
         <article className="itms-dash__statCard">
           <div className="itms-dash__statBody">
-            <span className="itms-dash__statLabel">Back-Paper Candidates</span>
+            <span className="itms-dash__statLabel">Repeat / Backlog Candidates</span>
             <span className="itms-dash__statValue">{backStudentsCount}</span>
           </div>
         </article>
@@ -318,7 +318,7 @@ export default function StudentsManagement({
       </div>
 
       <div className="card-table-wrapper">
-        <table className="data-table">
+        <table className="data-table data-table--wide data-table--sticky-actions">
           <thead>
             <tr>
               <th style={{ width: '130px' }}>Roll Number</th>
@@ -328,7 +328,7 @@ export default function StudentsManagement({
               <th style={{ width: '85px' }}>Batch</th>
               <th style={{ width: '85px', textAlign: 'center' }}>Section</th>
               <th>Enrolled Courses &amp; Status</th>
-              <th style={{ width: '130px', textAlign: 'right' }}>Actions</th>
+              <th style={{ width: '140px', minWidth: '140px', textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -375,16 +375,16 @@ export default function StudentsManagement({
                       {enrols.map((e, idx) => (
                         <span
                           key={idx}
-                          className={`badge ${e.type === 'back' ? 'badge--warning' : 'badge--outline'}`}
+                          className={`badge ${e.type === 'back' ? 'badge--warning student-overflow-badge' : 'badge--outline'}`}
                           style={{
                             fontSize: '0.70rem',
                             padding: '2px 6px',
                             fontWeight: 600,
-                            border: e.type === 'back' ? 'none' : '1px solid var(--itms-border)',
+                            border: e.type === 'back' ? '2px solid #ef4444' : '1px solid var(--itms-border)',
                           }}
                         >
                           {e.course}
-                          {e.type === 'back' ? ' (Back)' : ''}
+                          {e.type === 'back' ? ' (Repeat)' : ''}
                           {(e.attendance_percent ?? 100) < 75 ? ` · ${e.attendance_percent}% attendance (ineligible)` : ''}
                         </span>
                       ))}

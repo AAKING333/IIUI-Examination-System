@@ -304,6 +304,8 @@ export default function App() {
               slots={slots}
               datesheet={datesheet}
               courses={courses}
+              students={students}
+              rooms={rooms}
             />
           )}
 

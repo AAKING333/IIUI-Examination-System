@@ -117,8 +117,27 @@
   border: 1px solid var(--itms-border);
   border-radius: var(--itms-radius-md);
   box-shadow: var(--itms-shadow-sm);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
   margin-bottom: 1.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f8fafc;
+}
+
+.card-table-wrapper::-webkit-scrollbar {
+  height: 8px;
+}
+.card-table-wrapper::-webkit-scrollbar-track {
+  background: #f8fafc;
+  border-radius: 0 0 6px 6px;
+}
+.card-table-wrapper::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+.card-table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 .data-table {
@@ -126,6 +145,35 @@
   border-collapse: collapse;
   font-size: 0.82rem;
   text-align: left;
+}
+
+/* Wide operational tables scroll horizontally instead of clipping the
+   final action column. The action column stays visible while scrolling. */
+.data-table--wide {
+  min-width: 1050px;
+}
+
+.data-table--sticky-actions th:last-child,
+.data-table--sticky-actions td:last-child {
+  position: sticky;
+  right: 0;
+  white-space: nowrap;
+}
+
+.data-table--sticky-actions th:last-child {
+  z-index: 3;
+  background: var(--itms-surface-muted, #f8fafc);
+}
+
+.data-table--sticky-actions td:last-child {
+  z-index: 2;
+  min-width: 160px;
+  background: var(--itms-surface, #ffffff);
+  box-shadow: -8px 0 12px -6px rgba(15, 23, 42, 0.15);
+}
+
+.data-table--sticky-actions tbody tr:hover td:last-child {
+  background: #f8fafc;
 }
 
 .data-table th {
@@ -481,6 +529,180 @@
   margin: 0;
   font-size: 0.8rem;
   color: var(--itms-text-secondary);
+}
+
+.dcs-seating-sheet__invigilators {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--itms-text-secondary);
+}
+
+.dcs-seating-sheet__invigilators-label {
+  color: var(--iiui-navy);
+  font-weight: 700;
+}
+
+.dcs-invigilator-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.55rem;
+  border: 1px solid var(--iiui-green-200, #bbf7d0);
+  border-radius: 999px;
+  background: var(--iiui-green-50, #f0fdf4);
+  color: var(--iiui-green-900, #14532d);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.dcs-invigilator-chip--missing {
+  border-color: var(--itms-warn-border, #fde68a);
+  background: var(--itms-warn-bg, #fffbeb);
+  color: var(--itms-warn, #b45309);
+}
+
+/* Invigilation summary shown above the printable seating sheets. */
+.seating-invigilation-panel {
+  padding: 1.25rem 1.4rem;
+  margin-bottom: 1.5rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbf9 100%);
+  border: 1px solid var(--itms-border);
+  border-left: 4px solid var(--iiui-green);
+  border-radius: var(--itms-radius-md);
+  box-shadow: var(--itms-shadow-sm);
+}
+
+.seating-invigilation-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.seating-invigilation-panel__eyebrow {
+  margin-bottom: 0.2rem;
+  color: var(--itms-text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.seating-invigilation-panel__title {
+  margin: 0;
+  color: var(--iiui-navy);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.seating-invigilation-panel__meta {
+  margin: 0.25rem 0 0;
+  color: var(--itms-text-muted);
+  font-size: 0.8rem;
+}
+
+.seating-invigilation-panel__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.seating-invigilation-panel__status--complete {
+  border: 1px solid var(--itms-success-border, #bbf7d0);
+  background: var(--itms-success-bg, #f0fdf4);
+  color: var(--itms-success, #166534);
+}
+
+.seating-invigilation-panel__status--warning {
+  border: 1px solid var(--itms-warn-border, #fde68a);
+  background: var(--itms-warn-bg, #fffbeb);
+  color: var(--itms-warn, #b45309);
+}
+
+.seating-invigilation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.75rem;
+}
+
+.seating-invigilation-room {
+  padding: 0.75rem 0.85rem;
+  background: #ffffff;
+  border: 1px solid var(--itms-border);
+  border-radius: var(--itms-radius-sm);
+}
+
+.seating-invigilation-room__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--iiui-navy);
+  font-size: 0.82rem;
+}
+
+.seating-invigilation-room__head span {
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  background: var(--itms-surface-muted);
+  color: var(--itms-text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.seating-invigilation-room__people {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.seating-invigilation-person {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  color: var(--itms-text);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.seating-invigilation-person svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: var(--iiui-green);
+}
+
+.seating-invigilation-person--missing {
+  color: var(--itms-warn, #b45309);
+  font-weight: 600;
+}
+
+.seating-invigilation-person--missing svg {
+  color: var(--itms-warn, #b45309);
+}
+
+@media (max-width: 720px) {
+  .seating-invigilation-panel {
+    padding: 1rem;
+  }
+
+  .seating-invigilation-panel__status {
+    white-space: normal;
+  }
 }
 
 /* Print Styles */
@@ -1074,4 +1296,811 @@
   100% { outline-color: #ca8a04; }
 }
 
+/* ==========================================================================
+   Exam Operations - Professional KPI Metrics Header
+   ========================================================================== */
+.ops-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.15rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 1120px) {
+  .ops-stat-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .ops-stat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ops-stat-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1.15rem 1.25rem 1.05rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  position: relative;
+  overflow: hidden;
+  min-height: 125px;
+}
+
+.ops-stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3.5px;
+}
+
+.ops-stat-card--total::before { background: var(--iiui-green, #15803d); }
+.ops-stat-card--own::before { background: #0284c7; }
+.ops-stat-card--extra::before { background: #d97706; }
+.ops-stat-card--umc::before { background: #dc2626; }
+
+.ops-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.ops-stat-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.ops-stat-card__label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+
+.ops-stat-card__icon-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.ops-stat-card--total .ops-stat-card__icon-badge {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.ops-stat-card--own .ops-stat-card__icon-badge {
+  background: #f0f9ff;
+  color: #0284c7;
+}
+
+.ops-stat-card--extra .ops-stat-card__icon-badge {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.ops-stat-card--umc .ops-stat-card__icon-badge {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.ops-stat-card__value {
+  font-size: 2.15rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--iiui-navy, #0f172a);
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.4rem;
+}
+
+.ops-stat-card__footer {
+  font-size: 0.76rem;
+  color: #64748b;
+  line-height: 1.35;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 0.45rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* ==========================================================================
+   Seating Plan - Official Header Invigilator Display & Quick Navigation
+   ========================================================================== */
+.dcs-seating-sheet__invigilation-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.45rem 0 0.2rem;
+  padding: 0.45rem 0.85rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.dcs-seating-sheet__invig-title {
+  color: var(--iiui-navy, #1e3a5f);
+  font-size: 0.82rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+.dcs-seating-sheet__invig-list {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.dcs-invig-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 9999px;
+  padding: 2px 9px 2px 8px;
+  font-size: 0.78rem;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.dcs-invig-pill strong {
+  color: var(--iiui-navy, #1e3a5f);
+  font-weight: 700;
+}
+
+.dcs-invig-type {
+  font-size: 0.67rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.dcs-invig-type--own {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.dcs-invig-type--hall {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.dcs-seating-sheet__invig-empty {
+  color: #b45309;
+  font-size: 0.78rem;
+  font-style: italic;
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   Seating Plan - Slot Venues & Staffing Directory (Executive Overview & Quick Navigation)
+   ========================================================================== */
+.slot-venues-directory {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.slot-venues-directory__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.slot-venues-directory__title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.slot-venues-directory__title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--iiui-navy, #1e3a5f);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.slot-venues-directory__stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.slot-venues-directory__stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.slot-venues-directory__stat-pill--green {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+
+.slot-venues-directory__stat-pill--navy {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+  color: #0369a1;
+}
+
+.slot-venues-directory__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Category Filter Pills (All, Halls, Labs) */
+.venue-filter-pills {
+  display: inline-flex;
+  background: #f1f5f9;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+
+.venue-filter-pill-btn {
+  border: none;
+  background: transparent;
+  padding: 3px 9px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #64748b;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.venue-filter-pill-btn:hover {
+  color: #1e293b;
+}
+
+.venue-filter-pill-btn--active {
+  background: #ffffff;
+  color: var(--iiui-green-700, #15803d);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* View Mode Toggles (Grid / Table) */
+.venue-view-toggle {
+  display: inline-flex;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.venue-view-toggle-btn {
+  border: none;
+  background: #ffffff;
+  padding: 4px 7px;
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.venue-view-toggle-btn:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.venue-view-toggle-btn--active {
+  background: var(--iiui-green-50, #f0fdf4);
+  color: var(--iiui-green-700, #15803d);
+  font-weight: 700;
+}
+
+/* Directory Body */
+.slot-venues-directory__body {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #f1f5f9;
+}
+
+/* Grid Layout */
+.slot-venues-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.85rem;
+}
+
+/* Individual Venue Card */
+.slot-venue-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.85rem 0.95rem;
+  text-decoration: none;
+  color: inherit;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.slot-venue-card:hover {
+  background: #ffffff;
+  border-color: #86efac;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px -3px rgba(22, 163, 74, 0.15), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+.slot-venue-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.slot-venue-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.slot-venue-card__name {
+  font-size: 0.96rem;
+  font-weight: 800;
+  color: var(--iiui-navy, #1e3a5f);
+  letter-spacing: -0.01em;
+}
+
+.slot-venue-card__type {
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.slot-venue-card__type--hall {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.slot-venue-card__type--lab {
+  background: #f5f3ff;
+  color: #7c3aed;
+  border: 1px solid #ddd6fe;
+}
+
+.slot-venue-card__seated {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #15803d;
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+  padding: 2px 7px;
+  border-radius: 12px;
+}
+
+/* Staffing Section inside card */
+.slot-venue-card__staff-box {
+  background: #ffffff;
+  border: 1px solid #f1f5f9;
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.65rem;
+  flex: 1;
+}
+
+.slot-venue-card__staff-heading {
+  font-size: 0.69rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.slot-venue-card__staff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.slot-venue-card__staff-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.slot-venue-card__staff-name {
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slot-venue-card__staff-role {
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.slot-venue-card__staff-role--own {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.slot-venue-card__staff-role--hall {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.slot-venue-card__staff-empty {
+  font-size: 0.74rem;
+  font-style: italic;
+  color: #b45309;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Card bottom action jump hint */
+.slot-venue-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--iiui-green-700, #15803d);
+  padding-top: 0.3rem;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.slot-venue-card:hover .slot-venue-card__arrow {
+  transform: translateX(3px);
+  transition: transform 0.15s ease;
+}
+
+/* Table View in Directory */
+.slot-venues-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.slot-venues-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.slot-venues-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.slot-venues-table td {
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  vertical-align: middle;
+}
+
+.slot-venues-table tbody tr:hover {
+  background: #f0fdf4;
+}
+
+/* Backward-compatible quick navigation classes */
+.seating-rooms-summary-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.seating-rooms-summary-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.seating-rooms-chip-grid {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.seating-room-quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 0.76rem;
+  color: #0f172a;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.seating-room-quick-chip:hover {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #15803d;
+  box-shadow: 0 2px 4px rgba(22, 163, 74, 0.1);
+}
+
+.chip-room-name {
+  font-weight: 700;
+  color: var(--iiui-navy, #1e3a5f);
+}
+
+.chip-seated-count {
+  background: #e2e8f0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.69rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.chip-invig-info {
+  color: #047857;
+  font-weight: 600;
+  font-size: 0.72rem;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-invig-info--empty {
+  color: #b45309;
+  font-style: italic;
+  font-weight: 400;
+}
+
+@media print {
+  .slot-venues-directory,
+  .seating-rooms-summary-strip {
+    display: none !important;
+  }
+}
+
+@media print {
+  .seating-rooms-summary-strip {
+    display: none !important;
+  }
+  .dcs-seating-sheet__invigilation-bar {
+    background: transparent !important;
+    border: 1px solid #111 !important;
+    padding: 3px 8px !important;
+    margin-top: 4px !important;
+  }
+  .dcs-invig-pill {
+    border: 1px solid #444 !important;
+    box-shadow: none !important;
+    padding: 1px 5px !important;
+  }
+  .dcs-invig-type {
+    border: none !important;
+    background: transparent !important;
+    color: #000 !important;
+  }
+}
+
+/* =============================================
+   RESERVE BUFFER & OVERFLOW STUDENT STYLES
+   ============================================= */
+
+/* Overflow (Back-Paper) student badge highlight */
+.student-overflow-badge,
+.student-overflow-cell {
+  border: 2px solid #ef4444 !important;
+  background: #fff1f2 !important;
+  color: #b91c1c !important;
+  font-weight: 700 !important;
+}
+
+.seat-cell--reserved {
+  font-style: italic;
+}
+
+.btn--success {
+  background: #16a34a;
+  color: #fff;
+  border: 1px solid #15803d;
+}
+
+.btn--success:hover:not(:disabled) {
+  background: #15803d;
+  border-color: #166534;
+}
+
+/* Low-Fill Admin Notice */
+.low-fill-notice {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+
+.low-fill-notice__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.low-fill-notice__icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.low-fill-notice__header strong {
+  display: block;
+  font-size: 0.95rem;
+  color: #92400e;
+  margin-bottom: 2px;
+}
+
+.low-fill-notice__header p {
+  font-size: 0.82rem;
+  color: #78350f;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.low-fill-notice__dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #92400e;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.low-fill-notice__dismiss:hover {
+  background: #fef3c7;
+}
+
+.low-fill-notice__rooms {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.low-fill-notice__room-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-radius: 7px;
+  padding: 0.55rem 0.85rem;
+}
+
+.low-fill-notice__room-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.low-fill-notice__room-info strong {
+  font-size: 0.88rem;
+  color: var(--iiui-navy, #1e3a5f);
+}
+
+.low-fill-notice__pct {
+  font-size: 0.78rem;
+  color: #92400e;
+  background: #fef3c7;
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-weight: 600;
+}
+
+.low-fill-notice__reserve-tag {
+  font-size: 0.74rem;
+  color: #065f46;
+  background: #d1fae5;
+  border: 1px solid #6ee7b7;
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-weight: 600;
+}
+
+/* Success button variant (for applied state) */
+.btn--success {
+  background: #16a34a;
+  color: #fff;
+  border: 1px solid #15803d;
+  cursor: default;
+  opacity: 0.85;
+}
+.btn--success:hover {
+  background: #15803d;
+}
 

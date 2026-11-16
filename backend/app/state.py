@@ -22,5 +22,6 @@ def supersede_state():
     superseded = database.supersede_datesheet()
     if superseded:
         datesheet_state = superseded
+    database.clear_invigilation_duties()
     clear_cache()
     return datesheet_state

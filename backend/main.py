@@ -26,6 +26,14 @@ from app.services import (
     compile_datesheet_xlsx_buffer,
     compile_datesheet_pdf_buffer,
     generate_duties,
+    recalculate_duties,
+    list_duties,
+    get_roster_summary,
+    get_faculty_workload,
+    get_slot_requirements,
+    create_manual_duty,
+    update_manual_duty,
+    delete_manual_duty,
     compile_student_exam_allocations,
     get_roll_slip_payload,
 )
@@ -74,6 +82,7 @@ async def persist_master_data(request, call_next):
             if superseded:
                 datesheet_state.clear()
                 datesheet_state.update(superseded)
+            database.clear_invigilation_duties()
             clear_cache()
     return response
 
@@ -106,8 +115,23 @@ generate_datesheet_endpoint = generate_datesheet_schedule
 
 
 def generate_invigilation_duties(payload):
-    slot_ids = getattr(payload, "slot_ids", []) if hasattr(payload, "slot_ids") else payload.get("slot_ids", [])
-    return generate_duties(slot_ids)
+    if hasattr(payload, "slot_ids"):
+        slot_ids = getattr(payload, "slot_ids", []) or []
+        preserve_manual = getattr(payload, "preserve_manual", True)
+        duty_cap = getattr(payload, "duty_cap", 4)
+        release_invalid_manual = getattr(payload, "release_invalid_manual", False)
+    else:
+        payload = payload or {}
+        slot_ids = payload.get("slot_ids", []) or []
+        preserve_manual = payload.get("preserve_manual", True)
+        duty_cap = payload.get("duty_cap", 4)
+        release_invalid_manual = payload.get("release_invalid_manual", False)
+    return generate_duties(
+        slot_ids_filter=slot_ids,
+        preserve_manual=preserve_manual,
+        duty_cap=duty_cap,
+        release_invalid_manual=release_invalid_manual,
+    )
 
 
 def export_datesheet_xlsx():

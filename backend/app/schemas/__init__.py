@@ -10,7 +10,7 @@ from app.schemas.time_slot import (
     BulkDeleteSlotsIn,
     BulkShiftSlotsIn,
 )
-from app.schemas.invigilation import DutyGenerationIn
+from app.schemas.invigilation import DutyCreateIn, DutyGenerationIn, DutyUpdateIn
 from app.schemas.umc import UMCReportIn, UMCReportUpdateIn
 
 __all__ = [
@@ -28,6 +28,8 @@ __all__ = [
     "BulkDeleteSlotsIn",
     "BulkShiftSlotsIn",
     "DutyGenerationIn",
+    "DutyCreateIn",
+    "DutyUpdateIn",
     "UMCReportIn",
     "UMCReportUpdateIn",
 ]

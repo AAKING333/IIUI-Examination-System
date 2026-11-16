@@ -8,9 +8,18 @@ from app.state import seating_cache
 router = APIRouter(prefix="/api/rooms", tags=["Rooms Management"])
 
 
+def _with_totals(room: dict) -> dict:
+    cap = int(room.get("capacity", 0) or 0)
+    reserve = int(room.get("reserve_capacity", 0) or 0)
+    enriched = dict(room)
+    enriched["reserve_capacity"] = reserve
+    enriched["total_usable_seats"] = cap + reserve
+    return enriched
+
+
 @router.get("")
 def list_rooms():
-    return store.get_rooms()
+    return [_with_totals(r) for r in store.get_rooms()]
 
 
 @router.get("/{room_id}")
@@ -18,15 +27,24 @@ def get_room(room_id: str):
     room = store.get_room(room_id)
     if not room:
         raise HTTPException(status_code=404, detail=f"Room '{room_id}' not found.")
-    return room
+    return _with_totals(room)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_room(room: RoomIn):
     try:
-        new_room = store.add_room(room.name, room.rows, room.columns, room.capacity, room.room_type)
+        new_room = store.add_room(
+            room.name,
+            room.rows,
+            room.columns,
+            room.capacity,
+            room.room_type,
+            room.department,
+            room.reserve_capacity,
+            room.invigilators_required,
+        )
         seating_cache.clear()
-        return new_room
+        return _with_totals(new_room)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -34,11 +52,21 @@ def create_room(room: RoomIn):
 @router.put("/{room_id}")
 def update_room(room_id: str, room: RoomIn):
     try:
-        updated = store.update_room(room_id, room.name, room.rows, room.columns, room.capacity, room.room_type)
+        updated = store.update_room(
+            room_id,
+            room.name,
+            room.rows,
+            room.columns,
+            room.capacity,
+            room.room_type,
+            room.department,
+            room.reserve_capacity,
+            room.invigilators_required,
+        )
         if not updated:
             raise HTTPException(status_code=404, detail=f"Room '{room_id}' not found.")
         seating_cache.clear()
-        return updated
+        return _with_totals(updated)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

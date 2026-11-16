@@ -57,6 +57,8 @@ def generate_datesheet_schedule() -> dict:
     datesheet_state.clear()
     datesheet_state.update(new_state)
     seating_cache.clear()
+    # A new datesheet invalidates every existing invigilation assignment.
+    database.clear_invigilation_duties()
     logger.info(
         "Datesheet successfully generated: all %d papers scheduled.",
         len(datesheet_state["datesheet"]),

@@ -9,7 +9,29 @@ export const examOpsService = {
     const qs = new URLSearchParams(params).toString();
     return http.get(`/invigilation/duties${qs ? `?${qs}` : ''}`);
   },
-  generateDuties: (slotIds = []) => http.post('/invigilation/generate', { slot_ids: slotIds }),
+  getRoster: () => http.get('/invigilation/roster'),
+  getFaculty: () => http.get('/invigilation/faculty'),
+  getSlotRequirements: (slotId) =>
+    http.get(`/invigilation/slots/${encodeURIComponent(slotId)}/requirements`),
+  generateDuties: (options = {}) =>
+    http.post('/invigilation/generate', {
+      slot_ids: [],
+      preserve_manual: true,
+      duty_cap: 4,
+      release_invalid_manual: false,
+      ...options,
+    }),
+  recalculateDuties: (options = {}) =>
+    http.post('/invigilation/recalculate', {
+      slot_ids: [],
+      preserve_manual: true,
+      duty_cap: 4,
+      release_invalid_manual: false,
+      ...options,
+    }),
+  createDuty: (data) => http.post('/invigilation/duties', data),
+  updateDuty: (id, data) => http.patch(`/invigilation/duties/${encodeURIComponent(id)}`, data),
+  deleteDuty: (id) => http.delete(`/invigilation/duties/${encodeURIComponent(id)}`),
 
   // UMC Reports
   getUMCReports: (params = {}) => {

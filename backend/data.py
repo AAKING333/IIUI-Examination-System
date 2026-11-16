@@ -871,7 +871,7 @@ class DataStore:
     def get_room(self, room_id: str) -> Optional[Dict[str, Any]]:
         return next((r for r in self.rooms if r["id"] == room_id), None)
 
-    def add_room(self, name: str, rows: int, columns: int, capacity: Optional[int] = None, room_type: Optional[str] = None) -> Dict[str, Any]:
+    def add_room(self, name: str, rows: int, columns: int, capacity: Optional[int] = None, room_type: Optional[str] = None, department: Optional[str] = None, reserve_capacity: Optional[int] = None, invigilators_required: Optional[int] = None) -> Dict[str, Any]:
         if any(room["name"].strip().lower() == name.strip().lower() for room in self.rooms):
             raise ValueError(f"Room '{name.strip()}' already exists.")
         calc_cap = capacity if capacity is not None and capacity > 0 else (rows * columns)
@@ -885,6 +885,10 @@ class DataStore:
         new_num = max(existing_nums) + 1 if existing_nums else 1
         new_id = f"{prefix}{new_num}"
 
+        res_cap = reserve_capacity if reserve_capacity is not None else (0 if is_lab else 5)
+        dept = department.strip() if department else ("CS" if "cs" in name.lower() else "IT")
+        inv_req = invigilators_required if invigilators_required is not None else (1 if calc_cap <= 40 else (2 if calc_cap <= 65 else 3))
+
         room = {
             "id": new_id,
             "name": name.strip(),
@@ -892,15 +896,15 @@ class DataStore:
             "columns": int(columns),
             "capacity": int(calc_cap),
             "room_type": rtype,
-            "department": "CS",
-            "reserve_capacity": 0 if is_lab else 5,
-            "invigilators_required": 1,
+            "department": dept,
+            "reserve_capacity": int(res_cap),
+            "invigilators_required": int(inv_req),
         }
         self.rooms.append(room)
         self.save()
         return room
 
-    def update_room(self, room_id: str, name: str, rows: int, columns: int, capacity: Optional[int] = None, room_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def update_room(self, room_id: str, name: str, rows: int, columns: int, capacity: Optional[int] = None, room_type: Optional[str] = None, department: Optional[str] = None, reserve_capacity: Optional[int] = None, invigilators_required: Optional[int] = None) -> Optional[Dict[str, Any]]:
         room = self.get_room(room_id)
         if not room:
             return None
@@ -914,6 +918,12 @@ class DataStore:
             room["room_type"] = room_type
         elif "room_type" not in room:
             room["room_type"] = "lab" if "lab" in name.lower() else "hall"
+        if department:
+            room["department"] = department.strip()
+        if reserve_capacity is not None:
+            room["reserve_capacity"] = int(reserve_capacity)
+        if invigilators_required is not None:
+            room["invigilators_required"] = int(invigilators_required)
         self.save()
         return room
 

@@ -83,6 +83,41 @@ def sync_datesheet_rooms(state: dict) -> None:
             e["allocated_rooms"] = allocated_by_entry.get(id(e), [])
 
 
+def _attach_invigilators(plan: dict, slot_id: str) -> dict:
+    """Attach current invigilation assignments to each room in a seating plan."""
+    duties = database.get_invigilation_duties(slot_id=slot_id)
+    by_room = defaultdict(list)
+    for duty in duties:
+        room_id = duty.get("room_id")
+        if room_id:
+            by_room[room_id].append(duty)
+
+    for room in plan.get("rooms", []):
+        room_duties = sorted(
+            by_room.get(room.get("room_id"), []),
+            key=lambda d: (d.get("instructor") or "").lower(),
+        )
+        room["invigilators"] = [d.get("instructor") for d in room_duties if d.get("instructor")]
+        room["invigilation"] = [
+            {
+                "id": d.get("id", ""),
+                "instructor": d.get("instructor", ""),
+                "status": d.get("status", "assigned"),
+                "source": d.get("source", "auto"),
+                "duty_type": d.get("duty_type", ""),
+            }
+            for d in room_duties
+        ]
+
+    unique = sorted({d.get("instructor") for d in duties if d.get("instructor")})
+    plan["invigilators"] = unique
+    plan["invigilator_count"] = len(unique)
+    plan["invigilation_duty_count"] = len(duties)
+    plan["assigned_room_count"] = sum(1 for room in plan.get("rooms", []) if room.get("invigilators"))
+    plan["unassigned_room_count"] = sum(1 for room in plan.get("rooms", []) if not room.get("invigilators"))
+    return plan
+
+
 def resolve_seating_plan(slot_id: str):
     """Resolves the seating plan for a time slot: custom DB override or algorithmic generator."""
     if datesheet_state.get("status") == "SUPERSEDED":
@@ -91,10 +126,11 @@ def resolve_seating_plan(slot_id: str):
             detail=f"Datesheet version {datesheet_state.get('version')} is superseded; regenerate it before using seating plans.",
         )
     if slot_id in seating_cache:
-        return seating_cache[slot_id]
+        return _attach_invigilators(seating_cache[slot_id], slot_id)
 
     custom = database.get_custom_seating_plan(slot_id)
     if custom:
+        custom = _attach_invigilators(custom, slot_id)
         seating_cache[slot_id] = custom
         return custom
 
@@ -217,6 +253,7 @@ def resolve_seating_plan(slot_id: str):
         "courses": [{"code": c["code"], "title": c["title"]} for c in slot_courses],
     }
 
+    plan = _attach_invigilators(plan, slot_id)
     seating_cache[slot_id] = plan
     return plan
 
@@ -256,6 +293,8 @@ def save_custom_seating_plan(payload: dict) -> dict:
 
     timestamp = datetime.datetime.now().isoformat()
     database.save_custom_seating_plan(slot_id, plan, timestamp)
+    database.delete_invigilation_duties_for_slot(slot_id)
+    plan = _attach_invigilators(plan, slot_id)
     seating_cache[slot_id] = plan
 
     # Synchronize datesheet state so any vacated rooms (like Lab 4) are removed from datesheet
@@ -274,6 +313,7 @@ def regenerate_seating_plan(slot_id: str) -> dict:
     """Clears custom overrides for a slot and regenerates algorithmic plan."""
     database.delete_custom_seating_plan(slot_id)
     seating_cache.pop(slot_id, None)
+    database.delete_invigilation_duties_for_slot(slot_id)
     plan = resolve_seating_plan(slot_id)
     sync_datesheet_rooms(datesheet_state)
     database.publish_datesheet(datesheet_state, datetime.datetime.now().isoformat())

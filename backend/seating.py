@@ -682,6 +682,7 @@ def _build_lab_seating_plan(
                 continue
 
             r_usable = rows * cols  # In a lab, all seats are valid computers
+            reserve_cap = room.get("reserve_capacity", 0) or 0
             util = (seated_in_room / r_usable * 100) if r_usable else 0
             room_out = {
                 "room_id": room["id"],
@@ -689,7 +690,9 @@ def _build_lab_seating_plan(
                 "rows": rows,
                 "columns": cols,
                 "capacity": room["capacity"],
+                "reserve_capacity": reserve_cap,
                 "usable_capacity": r_usable,
+                "total_usable_seats": r_usable + reserve_cap,
                 "seated": seated_in_room,
                 "utilisation_pct": round(util, 1),
                 "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),
@@ -827,13 +830,16 @@ def _build_hall_seating_plan(
                 if seated <= 0:
                     continue
                 util = (seated / room["capacity"] * 100)
+                reserve_cap = room.get("reserve_capacity", 0) or 0
                 room_out = {
                     "room_id": room["id"],
                     "room_name": room["name"],
                     "rows": rows,
                     "columns": cols,
                     "capacity": room["capacity"],
+                    "reserve_capacity": reserve_cap,
                     "usable_capacity": room["capacity"],
+                    "total_usable_seats": room["capacity"] + reserve_cap,
                     "seated": seated,
                     "utilisation_pct": round(util, 1),
                     "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),
@@ -954,13 +960,16 @@ def _build_hall_seating_plan(
                 if seated <= 0:
                     continue
                 util = (seated / room["capacity"] * 100)
+                reserve_cap = room.get("reserve_capacity", 0) or 0
                 room_out = {
                     "room_id": room["id"],
                     "room_name": room["name"],
                     "rows": rows,
                     "columns": cols,
                     "capacity": room["capacity"],
+                    "reserve_capacity": reserve_cap,
                     "usable_capacity": room["capacity"],
+                    "total_usable_seats": room["capacity"] + reserve_cap,
                     "seated": seated,
                     "utilisation_pct": round(util, 1),
                     "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),
@@ -1013,13 +1022,16 @@ def _build_hall_seating_plan(
             if seated <= 0:
                 continue
             util = (seated / r_usable * 100) if r_usable else 0
+            reserve_cap = room.get("reserve_capacity", 0) or 0
             room_out = {
                 "room_id": room["id"],
                 "room_name": room["name"],
                 "rows": rows,
                 "columns": cols,
                 "capacity": room["capacity"],
+                "reserve_capacity": reserve_cap,
                 "usable_capacity": r_usable,
+                "total_usable_seats": r_usable + reserve_cap,
                 "seated": seated,
                 "utilisation_pct": round(util, 1),
                 "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),

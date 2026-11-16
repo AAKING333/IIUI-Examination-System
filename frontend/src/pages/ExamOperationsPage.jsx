@@ -13,8 +13,19 @@ import {
   Trash2,
   Users,
   Check,
+  Pencil,
+  Plus,
+  RotateCcw,
+  ListChecks,
+  Gauge,
+  BookOpen,
+  AlertCircle,
+  UserCheck,
+  XCircle,
+  Lock,
 } from 'lucide-react';
 import { examOpsService } from '../services/index.js';
+import Modal from '../components/Modal.jsx';
 
 const EMPTY_REPORT = {
   slot_id: '',
@@ -26,6 +37,81 @@ const EMPTY_REPORT = {
   evidence: [],
   signature_data: '',
 };
+
+const DUTY_STATUS_OPTIONS = ['assigned', 'confirmed', 'completed', 'absent'];
+
+const EMPTY_ADD_DUTY = {
+  slot_id: '',
+  room_id: '',
+  instructor: '',
+  status: 'assigned',
+  notes: '',
+};
+
+const TONE_COLORS = {
+  default: { bg: '#f8fafc', border: '#e2e8f0', text: 'var(--iiui-navy)' },
+  success: { bg: '#f0fdf4', border: '#bbf7d0', text: '#15803d' },
+  warning: { bg: '#fffbeb', border: '#fde68a', text: '#b45309' },
+  danger: { bg: '#fef2f2', border: '#fecaca', text: '#b91c1c' },
+  info: { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8' },
+};
+
+function HealthCard({ label, value, help, tone = 'default', icon = null }) {
+  const colors = TONE_COLORS[tone] || TONE_COLORS.default;
+  return (
+    <div
+      style={{
+        background: colors.bg,
+        border: `1px solid ${colors.border}`,
+        borderRadius: 10,
+        padding: '0.8rem 0.9rem',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--itms-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          {label}
+        </span>
+        {icon}
+      </div>
+      <div style={{ fontSize: '1.35rem', fontWeight: 800, color: colors.text, lineHeight: 1.2, marginTop: 4 }}>
+        {value}
+      </div>
+      {help && (
+        <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)', marginTop: 2 }}>
+          {help}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusPill({ children, tone = 'default' }) {
+  const colors = TONE_COLORS[tone] || TONE_COLORS.default;
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        padding: '3px 8px',
+        borderRadius: 9999,
+        fontSize: '0.72rem',
+        fontWeight: 700,
+        background: colors.bg,
+        color: colors.text,
+        border: `1px solid ${colors.border}`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function dutyStatusTone(status) {
+  if (status === 'completed') return 'success';
+  if (status === 'confirmed') return 'info';
+  if (status === 'absent') return 'danger';
+  return 'warning';
+}
+
 
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -44,11 +130,24 @@ export default function ExamOperationsPage({
   showBanner,
 }) {
   const [activeTab, setActiveTab] = useState('duties'); // 'duties' | 'umc'
+  const [roster, setRoster] = useState(null);
+  const [rosterView, setRosterView] = useState('assignments'); // assignments | coverage | workload | issues
   const [duties, setDuties] = useState([]);
   const [reports, setReports] = useState([]);
   const [reportFilter, setReportFilter] = useState('');
   const [dutySearch, setDutySearch] = useState('');
   const [dutySlotFilter, setDutySlotFilter] = useState('');
+  const [dutySourceFilter, setDutySourceFilter] = useState('');
+  const [dutyTypeFilter, setDutyTypeFilter] = useState('');
+  const [facultySearch, setFacultySearch] = useState('');
+  const [preserveManual, setPreserveManual] = useState(true);
+  const [releaseInvalidManual, setReleaseInvalidManual] = useState(false);
+
+  const [editDuty, setEditDuty] = useState(null);
+  const [editForm, setEditForm] = useState({ instructor: '', status: 'assigned', notes: '' });
+  const [addDutyOpen, setAddDutyOpen] = useState(false);
+  const [addDutyForm, setAddDutyForm] = useState(EMPTY_ADD_DUTY);
+  const [isSavingDuty, setIsSavingDuty] = useState(false);
 
   const [report, setReport] = useState(EMPTY_REPORT);
   const [photos, setPhotos] = useState([]);
@@ -111,12 +210,13 @@ export default function ExamOperationsPage({
     return [...new Set(slotInvigilators)];
   }, [duties, report.slot_id, report.room_id]);
 
-  // Load duties from API
-  const loadDuties = useCallback(async () => {
+  // Load the complete roster, health, coverage, and faculty workload.
+  const loadRoster = useCallback(async () => {
     setIsLoadingDuties(true);
     try {
-      const data = await examOpsService.getDuties();
-      setDuties(Array.isArray(data) ? data : []);
+      const data = await examOpsService.getRoster();
+      setRoster(data || null);
+      setDuties(Array.isArray(data?.duties) ? data.duties : []);
     } catch (err) {
       showBanner?.(`Could not load duty roster: ${err.message}`, 'danger');
     } finally {
@@ -139,8 +239,8 @@ export default function ExamOperationsPage({
   }, [reportFilter, showBanner]);
 
   useEffect(() => {
-    loadDuties();
-  }, [loadDuties]);
+    loadRoster();
+  }, [loadRoster]);
 
   useEffect(() => {
     loadReports();
@@ -154,22 +254,112 @@ export default function ExamOperationsPage({
     return () => window.clearInterval(timer);
   }, [loadReports]);
 
-  // Generate invigilation duty roster
-  const handleGenerateDuties = async () => {
+  const summarizeRecalculation = (result) => {
+    const parts = [`${result.generated_count} new assignment(s)`];
+    if (result.preserved_manual_count) {
+      parts.push(`${result.preserved_manual_count} manual override(s) preserved`);
+    }
+    if (result.released_manual_count) {
+      parts.push(`${result.released_manual_count} invalid override(s) released`);
+    }
+    return parts.join(', ');
+  };
+
+  const runRecalculation = async (slotId = '') => {
     setIsGenerating(true);
     try {
-      const result = await examOpsService.generateDuties([]);
-      await loadDuties();
-      showBanner?.(
-        `Successfully generated ${result.generated_count} invigilation assignments with 4-duty quota cap & ECR exemptions.`,
-        'success'
-      );
+      const result = await examOpsService.recalculateDuties({
+        slot_ids: slotId ? [slotId] : [],
+        preserve_manual: preserveManual,
+        release_invalid_manual: releaseInvalidManual,
+      });
+      await loadRoster();
+      showBanner?.(`Roster recalculated: ${summarizeRecalculation(result)}.`, 'success');
     } catch (error) {
-      showBanner?.(`Duty generation failed: ${error.message}`, 'danger');
+      showBanner?.(`Duty recalculation failed: ${error.message}`, 'danger');
     } finally {
       setIsGenerating(false);
     }
   };
+
+  const handleRecalculateAll = () => runRecalculation('');
+  const handleRecalculateSlot = (slotId) => runRecalculation(slotId);
+
+  const openEditDuty = (duty) => {
+    setEditDuty(duty);
+    setEditForm({
+      instructor: duty.instructor,
+      status: duty.status || 'assigned',
+      notes: duty.notes || '',
+    });
+  };
+
+  const saveDutyEdit = async () => {
+    if (!editDuty) return;
+    setIsSavingDuty(true);
+    try {
+      await examOpsService.updateDuty(editDuty.id, editForm);
+      await loadRoster();
+      setEditDuty(null);
+      showBanner?.(`Duty updated for ${editForm.instructor}. It is now a manual override.`, 'success');
+    } catch (error) {
+      showBanner?.(`Could not update duty: ${error.message}`, 'danger');
+    } finally {
+      setIsSavingDuty(false);
+    }
+  };
+
+  const openAddDuty = (slotId = '', roomId = '') => {
+    const availableSlots = roster?.slots || [];
+    const slot =
+      availableSlots.find((item) => item.slot_id === slotId) ||
+      availableSlots.find((item) => item.rooms.some((room) => room.missing > 0)) ||
+      availableSlots[0];
+    const room =
+      slot?.rooms.find((item) => item.room_id === roomId && item.missing > 0) ||
+      slot?.rooms.find((item) => item.missing > 0) ||
+      null;
+    setAddDutyForm({
+      ...EMPTY_ADD_DUTY,
+      slot_id: slot?.slot_id || '',
+      room_id: room?.room_id || '',
+    });
+    setAddDutyOpen(true);
+  };
+
+  const saveAddDuty = async () => {
+    if (!addDutyForm.slot_id || !addDutyForm.room_id || !addDutyForm.instructor) {
+      showBanner?.('Select a slot, room, and instructor before adding a duty.', 'danger');
+      return;
+    }
+    setIsSavingDuty(true);
+    try {
+      await examOpsService.createDuty(addDutyForm);
+      await loadRoster();
+      setAddDutyOpen(false);
+      showBanner?.(`Manual duty added for ${addDutyForm.instructor}.`, 'success');
+    } catch (error) {
+      showBanner?.(`Could not add duty: ${error.message}`, 'danger');
+    } finally {
+      setIsSavingDuty(false);
+    }
+  };
+
+  const removeDuty = async (duty) => {
+    const confirmed = window.confirm(
+      `Remove ${duty.instructor} from ${duty.room_name || duty.room_id}? ` +
+      'The system will block removal if the room would become understaffed.'
+    );
+    if (!confirmed) return;
+    try {
+      await examOpsService.deleteDuty(duty.id);
+      await loadRoster();
+      showBanner?.(`Removed ${duty.instructor} from ${duty.room_name || duty.room_id}.`, 'success');
+    } catch (error) {
+      showBanner?.(`Could not remove duty: ${error.message}`, 'danger');
+    }
+  };
+
 
   // Signature canvas handlers
   const clearSignature = () => {
@@ -278,21 +468,147 @@ export default function ExamOperationsPage({
     }
   };
 
+  const rosterSlots = useMemo(() => roster?.slots || [], [roster]);
+  const rosterIssues = useMemo(() => roster?.issues || [], [roster]);
+  const facultyWorkload = useMemo(() => roster?.faculty || [], [roster]);
+  const rosterStats = roster?.stats || {};
+  const datesheetPublished = (roster?.datesheet_status || datesheet?.status) === 'PUBLISHED';
+  const extraDutyCap = roster?.extra_duty_cap || 4;
+  const issueErrorCount =
+    rosterStats.error_count ?? rosterIssues.filter((issue) => issue.severity === 'error').length;
+  const issueWarningCount =
+    rosterStats.warning_count ?? rosterIssues.filter((issue) => issue.severity === 'warning').length;
+  const staffedRoomRatio = `${rosterStats.staffed_rooms ?? 0}/${rosterStats.required_rooms ?? 0}`;
+
+  const dutySlotOptions = useMemo(() => {
+    if (rosterSlots.length) {
+      return rosterSlots.map((slot) => ({
+        id: slot.slot_id,
+        date: slot.date,
+        start_time: slot.start_time,
+        end_time: slot.end_time,
+        label: slot.label,
+      }));
+    }
+    return slots;
+  }, [rosterSlots, slots]);
+
   const formatSlotLabel = (slotId) => {
-    const slot = slots.find((item) => item.id === slotId);
-    return slot ? `${slot.date} (${slot.start_time} - ${slot.end_time})` : slotId;
+    const slot =
+      slots.find((item) => item.id === slotId) ||
+      rosterSlots.find((item) => item.slot_id === slotId);
+    if (!slot) return slotId;
+    return `${slot.date} (${slot.start_time} - ${slot.end_time})`;
   };
 
   const filteredDuties = useMemo(() => {
+    const query = dutySearch.trim().toLowerCase();
     return duties.filter((d) => {
       const matchSearch =
-        !dutySearch ||
-        d.instructor.toLowerCase().includes(dutySearch.toLowerCase()) ||
-        d.room_id.toLowerCase().includes(dutySearch.toLowerCase());
+        !query ||
+        (d.instructor || '').toLowerCase().includes(query) ||
+        (d.room_name || d.room_id || '').toLowerCase().includes(query) ||
+        (d.notes || '').toLowerCase().includes(query);
       const matchSlot = !dutySlotFilter || d.slot_id === dutySlotFilter;
-      return matchSearch && matchSlot;
+      const matchSource = !dutySourceFilter || (d.source || 'auto') === dutySourceFilter;
+      const matchType = !dutyTypeFilter || d.duty_type === dutyTypeFilter;
+      return matchSearch && matchSlot && matchSource && matchType;
     });
-  }, [duties, dutySearch, dutySlotFilter]);
+  }, [duties, dutySearch, dutySlotFilter, dutySourceFilter, dutyTypeFilter]);
+
+  const coverageSlots = useMemo(() => {
+    if (!dutySlotFilter) return rosterSlots;
+    return rosterSlots.filter((slot) => slot.slot_id === dutySlotFilter);
+  }, [rosterSlots, dutySlotFilter]);
+
+  const filteredFaculty = useMemo(() => {
+    const query = facultySearch.trim().toLowerCase();
+    if (!query) return facultyWorkload;
+    return facultyWorkload.filter((member) => (
+      member.name.toLowerCase().includes(query) ||
+      (member.courses || []).some((course) => course.toLowerCase().includes(query))
+    ));
+  }, [facultyWorkload, facultySearch]);
+
+  const editRoomContext = useMemo(() => {
+    if (!editDuty) return null;
+    const slot = rosterSlots.find((item) => item.slot_id === editDuty.slot_id);
+    return slot?.rooms.find((room) => room.room_id === editDuty.room_id) || null;
+  }, [editDuty, rosterSlots]);
+
+  const editCandidates = useMemo(() => {
+    if (!editDuty) return [];
+    const slotDuties = duties.filter(
+      (duty) => duty.slot_id === editDuty.slot_id && duty.id !== editDuty.id
+    );
+    const usedInHall = new Set(
+      slotDuties.filter((duty) => duty.room_type !== 'lab').map((duty) => duty.instructor)
+    );
+    const usedInSlot = new Set(slotDuties.map((duty) => duty.instructor));
+    const current = facultyWorkload.find((member) => member.name === editDuty.instructor) || {
+      name: editDuty.instructor,
+      extra_duties: 0,
+      own_subject_duties: 0,
+      remaining_extra_capacity: extraDutyCap,
+      is_ecr: false,
+    };
+
+    if (editRoomContext?.is_lab && editRoomContext.lab_teachers?.length) {
+      return editRoomContext.lab_teachers
+        .filter((name) => !usedInHall.has(name) || name === editDuty.instructor)
+        .map((name) => facultyWorkload.find((member) => member.name === name) || {
+          name,
+          extra_duties: 0,
+          own_subject_duties: 0,
+          remaining_extra_capacity: extraDutyCap,
+          is_ecr: false,
+        });
+    }
+    return [
+      ...facultyWorkload.filter(
+        (member) => !member.is_ecr && !usedInSlot.has(member.name) && member.name !== editDuty.instructor
+      ),
+      current,
+    ];
+  }, [duties, editDuty, editRoomContext, facultyWorkload, extraDutyCap]);
+
+  const addSlotContext = useMemo(
+    () => rosterSlots.find((slot) => slot.slot_id === addDutyForm.slot_id) || null,
+    [rosterSlots, addDutyForm.slot_id]
+  );
+
+  const addRoomContext = useMemo(
+    () => addSlotContext?.rooms.find((room) => room.room_id === addDutyForm.room_id) || null,
+    [addSlotContext, addDutyForm.room_id]
+  );
+
+  const addAvailableRooms = useMemo(
+    () => (addSlotContext?.rooms || []).filter((room) => room.missing > 0),
+    [addSlotContext]
+  );
+
+  const addCandidates = useMemo(() => {
+    if (!addRoomContext) return [];
+    const slotDuties = duties.filter((duty) => duty.slot_id === addDutyForm.slot_id);
+    const usedInHall = new Set(
+      slotDuties.filter((duty) => duty.room_type !== 'lab').map((duty) => duty.instructor)
+    );
+    const usedInSlot = new Set(slotDuties.map((duty) => duty.instructor));
+    if (addRoomContext.is_lab && addRoomContext.lab_teachers?.length) {
+      return addRoomContext.lab_teachers
+        .filter((name) => !usedInHall.has(name))
+        .map((name) => facultyWorkload.find((member) => member.name === name) || {
+          name,
+          extra_duties: 0,
+          own_subject_duties: 0,
+          remaining_extra_capacity: extraDutyCap,
+          is_ecr: false,
+        });
+    }
+    return facultyWorkload.filter(
+      (member) => !member.is_ecr && !usedInSlot.has(member.name)
+    );
+  }, [addDutyForm.slot_id, addRoomContext, duties, facultyWorkload, extraDutyCap]);
 
   // Statistics
   const ownSubjectCount = useMemo(
@@ -320,44 +636,63 @@ export default function ExamOperationsPage({
       </div>
 
       {/* Overview Stat Cards */}
-      <div className="itms-dash__statGrid" style={{ marginBottom: '1.25rem' }}>
-        <article className="itms-dash__statCard">
-          <div className="itms-dash__statHeader">
-            <span className="itms-dash__statLabel">Total Duties Assigned</span>
-            <Users size={18} color="var(--iiui-green)" />
+      <div className="ops-stat-grid">
+        <article className="ops-stat-card ops-stat-card--total">
+          <div className="ops-stat-card__head">
+            <span className="ops-stat-card__label">Total Duties Assigned</span>
+            <div className="ops-stat-card__icon-badge">
+              <Users size={17} />
+            </div>
           </div>
-          <div className="itms-dash__statValue">{duties.length}</div>
-          <div className="itms-dash__statHelp">
-            Across {slots.length} session slots
+          <div className="ops-stat-card__value">
+            {rosterStats.total_duties ?? duties.length}
+          </div>
+          <div className="ops-stat-card__footer">
+            {staffedRoomRatio.replace('/', ' of ')} rooms staffed &bull;{' '}
+            {rosterSlots.length || slots.length} session slots
           </div>
         </article>
 
-        <article className="itms-dash__statCard">
-          <div className="itms-dash__statHeader">
-            <span className="itms-dash__statLabel">Own Subject Duties</span>
-            <ShieldCheck size={18} color="#0284c7" />
+        <article className="ops-stat-card ops-stat-card--own">
+          <div className="ops-stat-card__head">
+            <span className="ops-stat-card__label">Own Subject Duties</span>
+            <div className="ops-stat-card__icon-badge">
+              <ShieldCheck size={17} />
+            </div>
           </div>
-          <div className="itms-dash__statValue">{ownSubjectCount}</div>
-          <div className="itms-dash__statHelp">Exempt from 4-duty quota cap</div>
+          <div className="ops-stat-card__value">
+            {rosterStats.own_subject_count ?? ownSubjectCount}
+          </div>
+          <div className="ops-stat-card__footer">
+            Exempt from {extraDutyCap}-duty quota cap
+          </div>
         </article>
 
-        <article className="itms-dash__statCard">
-          <div className="itms-dash__statHeader">
-            <span className="itms-dash__statLabel">Extra Invigilation Duties</span>
-            <Clock size={18} color="#d97706" />
+        <article className="ops-stat-card ops-stat-card--extra">
+          <div className="ops-stat-card__head">
+            <span className="ops-stat-card__label">Extra Duties</span>
+            <div className="ops-stat-card__icon-badge">
+              <Clock size={17} />
+            </div>
           </div>
-          <div className="itms-dash__statValue">{extraDutiesCount}</div>
-          <div className="itms-dash__statHelp">Max 4 duties per faculty member</div>
+          <div className="ops-stat-card__value">
+            {rosterStats.extra_count ?? extraDutiesCount}
+          </div>
+          <div className="ops-stat-card__footer">
+            {rosterStats.manual_count ?? 0} manual {(rosterStats.manual_count ?? 0) === 1 ? 'override' : 'overrides'} &bull; Max cap: {extraDutyCap}
+          </div>
         </article>
 
-        <article className="itms-dash__statCard">
-          <div className="itms-dash__statHeader">
-            <span className="itms-dash__statLabel">UMC Discipline Cases</span>
-            <AlertTriangle size={18} color="#dc2626" />
+        <article className="ops-stat-card ops-stat-card--umc">
+          <div className="ops-stat-card__head">
+            <span className="ops-stat-card__label">UMC Discipline Cases</span>
+            <div className="ops-stat-card__icon-badge">
+              <AlertTriangle size={17} />
+            </div>
           </div>
-          <div className="itms-dash__statValue">{reports.length}</div>
-          <div className="itms-dash__statHelp">
-            {pendingUmcCount} case(s) requiring review/approval
+          <div className="ops-stat-card__value">{reports.length}</div>
+          <div className="ops-stat-card__footer">
+            {pendingUmcCount} {pendingUmcCount === 1 ? 'case' : 'cases'} requiring review
           </div>
         </article>
       </div>
@@ -386,49 +721,383 @@ export default function ExamOperationsPage({
         </div>
 
         {activeTab === 'duties' && (
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={handleGenerateDuties}
-            disabled={isGenerating || datesheet?.status !== 'PUBLISHED'}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
-          >
-            <RefreshCw size={14} className={isGenerating ? 'spin' : ''} />
-            {isGenerating ? 'Generating...' : 'Generate Duty Roster'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                color: 'var(--itms-text-muted)',
+              }}
+              title="Manual overrides remain locked during recalculation."
+            >
+              <input
+                type="checkbox"
+                checked={preserveManual}
+                onChange={(event) => setPreserveManual(event.target.checked)}
+              />
+              Preserve manual
+            </label>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                color: 'var(--itms-text-muted)',
+              }}
+              title="Release manual overrides that conflict with the current datesheet."
+            >
+              <input
+                type="checkbox"
+                checked={releaseInvalidManual}
+                onChange={(event) => setReleaseInvalidManual(event.target.checked)}
+              />
+              Release Manual
+            </label>
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={() => openAddDuty()}
+              disabled={!rosterSlots.length || !datesheetPublished}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              <Plus size={14} />
+              Add Manual Duty
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={handleRecalculateAll}
+              disabled={isGenerating || !datesheetPublished}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
+            >
+              <RotateCcw size={14} className={isGenerating ? 'spin' : ''} />
+              {isGenerating
+                ? 'Recalculating...'
+                : duties.length
+                  ? 'Recalculate All'
+                  : 'Generate Duty Roster'}
+            </button>
+          </div>
         )}
       </div>
 
       {/* Tab 1: Invigilation Duties Roster */}
       {activeTab === 'duties' && (
         <>
+          {/* Roster health */}
           <div
-            className="toolbar"
             style={{
-              background: '#f8fafc',
-              padding: '0.75rem 1rem',
-              borderRadius: '8px',
-              border: '1px solid #e2e8f0',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gap: '0.75rem',
               marginBottom: '1rem',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Search size={15} color="var(--itms-text-muted)" />
-                <input
-                  type="text"
-                  className="form-control"
-                  style={{ width: '220px', padding: '6px 10px', fontSize: '0.84rem' }}
-                  placeholder="Search instructor or room..."
-                  value={dutySearch}
-                  onChange={(e) => setDutySearch(e.target.value)}
-                />
+            <HealthCard
+              label="Rooms Staffed"
+              value={staffedRoomRatio}
+              help="Every required room fully covered"
+              tone={rosterStats.understaffed_rooms ? 'warning' : 'success'}
+              icon={<CheckCircle2 size={16} color="#15803d" />}
+            />
+            <HealthCard
+              label="Understaffed"
+              value={rosterStats.understaffed_rooms ?? 0}
+              help="Rooms missing invigilators"
+              tone={rosterStats.understaffed_rooms ? 'danger' : 'success'}
+              icon={<AlertCircle size={16} color={rosterStats.understaffed_rooms ? '#b91c1c' : '#15803d'} />}
+            />
+            <HealthCard
+              label="Overstaffed"
+              value={rosterStats.overstaffed_rooms ?? 0}
+              help="Rooms above policy ratio"
+              tone={rosterStats.overstaffed_rooms ? 'warning' : 'success'}
+              icon={<XCircle size={16} color={rosterStats.overstaffed_rooms ? '#b45309' : '#15803d'} />}
+            />
+            <HealthCard
+              label="Validation Errors"
+              value={issueErrorCount}
+              help={`${issueWarningCount} warning(s)`}
+              tone={issueErrorCount ? 'danger' : 'success'}
+              icon={<ShieldCheck size={16} color={issueErrorCount ? '#b91c1c' : '#15803d'} />}
+            />
+            <HealthCard
+              label="Manual Overrides"
+              value={rosterStats.manual_count ?? 0}
+              help="Preserved unless released"
+              tone={rosterStats.manual_count ? 'info' : 'default'}
+              icon={<Lock size={16} color="#1d4ed8" />}
+            />
+            <HealthCard
+              label="ECR Exempt"
+              value={rosterStats.ecr_exempt_count ?? 0}
+              help="Operational staff excluded from halls"
+              tone="info"
+              icon={<UserCheck size={16} color="#1d4ed8" />}
+            />
+          </div>
+
+          {!datesheetPublished && (
+            <div
+              style={{
+                background: '#fffbeb',
+                border: '1px solid #fde68a',
+                color: '#92400e',
+                borderRadius: 8,
+                padding: '0.75rem 1rem',
+                marginBottom: '1rem',
+                fontSize: '0.84rem',
+                fontWeight: 600,
+              }}
+            >
+              <AlertTriangle size={15} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+              Publish a valid datesheet before generating or editing invigilation duties.
+            </div>
+          )}
+
+          {/* Roster sub-tabs */}
+          <div className="toolbar" style={{ marginBottom: '1rem' }}>
+            <div className="toolbar__actions">
+              {[
+                ['assignments', 'Assignments', ListChecks],
+                ['coverage', 'Slot Coverage', Gauge],
+                ['workload', 'Faculty Workload', BookOpen],
+                ['issues', `Validation Issues (${rosterIssues.length})`, AlertTriangle],
+              ].map(([key, label, Icon]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`btn btn--sm ${rosterView === key ? 'btn--primary' : 'btn--outline'}`}
+                  onClick={() => setRosterView(key)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                >
+                  <Icon size={14} />
+                  {label}
+                </button>
+              ))}
+            </div>
+            {rosterView === 'assignments' && (
+              <button
+                type="button"
+                className="btn btn--sm btn--outline"
+                onClick={() => openAddDuty()}
+                disabled={!rosterSlots.length || !datesheetPublished}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+              >
+                <Plus size={14} />
+                Add Manual Duty
+              </button>
+            )}
+          </div>
+
+          {rosterView === 'assignments' && (
+            <>
+              <div
+                className="toolbar"
+                style={{
+                  background: '#f8fafc',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0',
+                  marginBottom: '1rem',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Search size={15} color="var(--itms-text-muted)" />
+                    <input
+                      type="text"
+                      className="form-control"
+                      style={{ width: '220px', padding: '6px 10px', fontSize: '0.84rem' }}
+                      placeholder="Search instructor, room, notes..."
+                      value={dutySearch}
+                      onChange={(e) => setDutySearch(e.target.value)}
+                    />
+                  </div>
+                  <select
+                    className="form-control"
+                    style={{ width: 'auto', fontSize: '0.84rem', padding: '6px 10px' }}
+                    value={dutySlotFilter}
+                    onChange={(e) => setDutySlotFilter(e.target.value)}
+                  >
+                    <option value="">All Examination Slots</option>
+                    {dutySlotOptions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.date} ({s.start_time} - {s.end_time}) {s.label ? `· ${s.label}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="form-control"
+                    style={{ width: 'auto', fontSize: '0.84rem', padding: '6px 10px' }}
+                    value={dutySourceFilter}
+                    onChange={(e) => setDutySourceFilter(e.target.value)}
+                  >
+                    <option value="">All Sources</option>
+                    <option value="auto">Auto-generated</option>
+                    <option value="manual">Manual override</option>
+                  </select>
+                  <select
+                    className="form-control"
+                    style={{ width: 'auto', fontSize: '0.84rem', padding: '6px 10px' }}
+                    value={dutyTypeFilter}
+                    onChange={(e) => setDutyTypeFilter(e.target.value)}
+                  >
+                    <option value="">All Duty Types</option>
+                    <option value="extra">Extra duty (counted)</option>
+                    <option value="own_subject">Own subject (exempt)</option>
+                  </select>
+                </div>
+                <span style={{ fontSize: '0.8rem', color: 'var(--itms-text-muted)' }}>
+                  Showing {filteredDuties.length} of {duties.length} assignments
+                </span>
               </div>
 
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--itms-text-muted)' }}>
-                  Slot:
-                </span>
+              <div className="card-table-wrapper">
+                <table className="data-table data-table--wide data-table--sticky-actions">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '180px' }}>Exam Session Slot</th>
+                      <th style={{ width: '170px' }}>Room / Lab</th>
+                      <th style={{ minWidth: '180px' }}>Invigilator Name</th>
+                      <th style={{ width: '150px' }}>Duty Category</th>
+                      <th style={{ width: '120px' }}>Source</th>
+                      <th style={{ width: '110px' }}>Status</th>
+                      <th style={{ width: '170px', minWidth: '170px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {isLoadingDuties && (
+                      <tr>
+                        <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--itms-text-muted)' }}>
+                          Loading roster...
+                        </td>
+                      </tr>
+                    )}
+                    {!isLoadingDuties && filteredDuties.map((duty) => {
+                      const isOwn = duty.duty_type === 'own_subject';
+                      const isManual = duty.source === 'manual';
+                      return (
+                        <tr key={duty.id}>
+                          <td style={{ fontWeight: 600, minWidth: 180 }}>
+                            {formatSlotLabel(duty.slot_id)}
+                            <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)', fontWeight: 400 }}>
+                              {duty.slot_is_morning ? 'Morning session' : 'Afternoon session'}
+                            </div>
+                          </td>
+                          <td>
+                            <span
+                              style={{
+                                background: '#f1f5f9',
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                fontWeight: 600,
+                                fontSize: '0.82rem',
+                              }}
+                            >
+                              {duty.room_name || duty.room_id}
+                            </span>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)', marginTop: 3 }}>
+                              Requires {duty.required_invigilators} invigilator(s)
+                              {duty.room_type === 'lab' ? ' · Lab' : ' · Hall'}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>
+                              {duty.instructor}
+                            </div>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}>
+                              {duty.is_ecr_exempt && <StatusPill tone="info">ECR</StatusPill>}
+                              {duty.is_senior && <StatusPill tone="warning">Senior</StatusPill>}
+                              {duty.notes && (
+                                <span style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)' }}>
+                                  {duty.notes}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <StatusPill tone={isOwn ? 'success' : 'info'}>
+                              {isOwn ? 'Own Subject (Exempt)' : 'Extra Duty'}
+                            </StatusPill>
+                          </td>
+                          <td>
+                            <StatusPill tone={isManual ? 'warning' : 'default'}>
+                              {isManual ? 'Manual override' : 'Auto'}
+                            </StatusPill>
+                          </td>
+                          <td>
+                            <StatusPill tone={dutyStatusTone(duty.status)}>
+                              {duty.status}
+                            </StatusPill>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <div style={{ display: 'inline-flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
+                              <button
+                                type="button"
+                                className="btn btn--sm btn--outline"
+                                onClick={() => openEditDuty(duty)}
+                                title="Edit or replace this invigilator"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+                              >
+                                <Pencil size={12} />
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn--sm btn--outline"
+                                onClick={() => removeDuty(duty)}
+                                title="Remove this assignment"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#b91c1c', borderColor: '#fca5a5', whiteSpace: 'nowrap' }}
+                              >
+                                <Trash2 size={12} />
+                                Remove
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!isLoadingDuties && !filteredDuties.length && (
+                      <tr>
+                        <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--itms-text-muted)' }}>
+                          {duties.length === 0 ? (
+                            <div>
+                              <p style={{ margin: '0 0 0.8rem' }}>No invigilation duty roster has been generated yet.</p>
+                              <button
+                                type="button"
+                                className="btn btn--primary"
+                                onClick={handleRecalculateAll}
+                                disabled={isGenerating || !datesheetPublished}
+                              >
+                                <RefreshCw size={14} className={isGenerating ? 'spin' : ''} />
+                                Generate Duty Roster Now
+                              </button>
+                            </div>
+                          ) : (
+                            'No assignments matched your filters.'
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {rosterView === 'coverage' && (
+            <>
+              <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Gauge size={16} color="var(--iiui-navy)" />
+                  <strong style={{ color: 'var(--iiui-navy)' }}>Room-by-room staffing coverage</strong>
+                </div>
                 <select
                   className="form-control"
                   style={{ width: 'auto', fontSize: '0.84rem', padding: '6px 10px' }}
@@ -436,102 +1105,273 @@ export default function ExamOperationsPage({
                   onChange={(e) => setDutySlotFilter(e.target.value)}
                 >
                   <option value="">All Examination Slots</option>
-                  {slots.map((s) => (
+                  {dutySlotOptions.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.date} ({s.start_time} - {s.end_time}) {s.label ? `· ${s.label}` : ''}
+                      {s.date} ({s.start_time} - {s.end_time})
                     </option>
                   ))}
                 </select>
               </div>
-            </div>
-
-            <span style={{ fontSize: '0.8rem', color: 'var(--itms-text-muted)' }}>
-              Showing {filteredDuties.length} of {duties.length} assignments
-            </span>
-          </div>
-
-          <div className="card-table-wrapper">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Exam Session Slot</th>
-                  <th>Room / Lab</th>
-                  <th>Invigilator Name</th>
-                  <th>Duty Category</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredDuties.map((duty) => {
-                  const roomObj = rooms.find((r) => r.id === duty.room_id || r.name === duty.room_id);
-                  const isOwn = duty.duty_type === 'own_subject';
-                  return (
-                    <tr key={duty.id}>
-                      <td style={{ fontWeight: 600 }}>{formatSlotLabel(duty.slot_id)}</td>
-                      <td>
-                        <span
-                          style={{
-                            background: '#f1f5f9',
-                            padding: '3px 8px',
-                            borderRadius: '4px',
-                            fontWeight: 600,
-                            fontSize: '0.82rem',
-                          }}
-                        >
-                          {roomObj?.name || duty.room_id}
-                        </span>
-                      </td>
-                      <td style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>
-                        {duty.instructor}
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '3px 8px',
-                            borderRadius: '9999px',
-                            fontSize: '0.75rem',
-                            fontWeight: 700,
-                            background: isOwn ? '#dcfce7' : '#e0f2fe',
-                            color: isOwn ? '#15803d' : '#0369a1',
-                          }}
-                        >
-                          {isOwn ? 'Own Subject (Exempt)' : 'Extra Duty'}
-                        </span>
-                      </td>
-                      <td>
-                        <span style={{ color: '#16a34a', fontWeight: 600, fontSize: '0.8rem' }}>
-                          ✓ {duty.status}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!filteredDuties.length && (
-                  <tr>
-                    <td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--itms-text-muted)' }}>
-                      {duties.length === 0 ? (
-                        <div>
-                          <p style={{ margin: '0 0 0.8rem' }}>No invigilation duty roster has been generated yet.</p>
-                          <button
-                            type="button"
-                            className="btn btn--primary"
-                            onClick={handleGenerateDuties}
-                            disabled={isGenerating || datesheet?.status !== 'PUBLISHED'}
-                          >
-                            <RefreshCw size={14} className={isGenerating ? 'spin' : ''} />
-                            Generate Duty Roster Now
-                          </button>
+              {!coverageSlots.length && (
+                <div className="card-table-wrapper" style={{ padding: '2rem', textAlign: 'center', color: 'var(--itms-text-muted)' }}>
+                  No datesheet slots are available for coverage review.
+                </div>
+              )}
+              {coverageSlots.map((slot) => (
+                <div key={slot.slot_id} className="card-table-wrapper" style={{ marginBottom: '1rem' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.75rem',
+                      padding: '0.9rem 1rem',
+                      borderBottom: '1px solid #e2e8f0',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div>
+                      <strong style={{ color: 'var(--iiui-navy)' }}>
+                        {slot.date} ({slot.start_time} - {slot.end_time})
+                      </strong>
+                      <span style={{ marginLeft: 8 }}>
+                        <StatusPill tone={slot.is_morning ? 'warning' : 'info'}>
+                          {slot.is_morning ? 'Morning' : 'Afternoon'}
+                        </StatusPill>
+                      </span>
+                      {slot.error && (
+                        <div style={{ color: '#b91c1c', fontSize: '0.78rem', marginTop: 4 }}>
+                          {slot.error}
                         </div>
-                      ) : (
-                        'No assignments matched your search filter.'
                       )}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--outline"
+                      onClick={() => handleRecalculateSlot(slot.slot_id)}
+                      disabled={isGenerating || !datesheetPublished}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    >
+                      <RotateCcw size={12} />
+                      Recalculate Slot
+                    </button>
+                  </div>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Room / Lab</th>
+                        <th>Type</th>
+                        <th>Required</th>
+                        <th>Assigned</th>
+                        <th>Coverage</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {slot.rooms.map((room) => {
+                        const under = room.missing > 0;
+                        const over = room.overstaffed > 0;
+                        return (
+                          <tr key={`${slot.slot_id}-${room.room_id}`}>
+                            <td style={{ fontWeight: 600 }}>{room.room_name}</td>
+                            <td>{room.is_lab ? 'Lab' : 'Hall'}</td>
+                            <td>{room.required}</td>
+                            <td>{room.assigned}</td>
+                            <td>
+                              <StatusPill tone={under ? 'danger' : over ? 'warning' : 'success'}>
+                                {under
+                                  ? `Understaffed (${room.missing} missing)`
+                                  : over
+                                    ? `Overstaffed (+${room.overstaffed})`
+                                    : 'Staffed'}
+                              </StatusPill>
+                            </td>
+                            <td>
+                              {under ? (
+                                <button
+                                  type="button"
+                                  className="btn btn--sm btn--outline"
+                                  onClick={() => openAddDuty(slot.slot_id, room.room_id)}
+                                  disabled={!datesheetPublished}
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                                >
+                                  <Plus size={12} />
+                                  Add
+                                </button>
+                              ) : (
+                                <span style={{ color: 'var(--itms-text-muted)', fontSize: '0.78rem' }}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {!slot.rooms.length && (
+                        <tr>
+                          <td colSpan={6} style={{ textAlign: 'center', padding: '1.25rem', color: 'var(--itms-text-muted)' }}>
+                            No active rooms for this slot.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </>
+          )}
+
+          {rosterView === 'workload' && (
+            <>
+              <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <BookOpen size={16} color="var(--iiui-navy)" />
+                  <strong style={{ color: 'var(--iiui-navy)' }}>Faculty workload &amp; quota health</strong>
+                </div>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Search size={15} color="var(--itms-text-muted)" />
+                  <input
+                    type="text"
+                    className="form-control"
+                    style={{ width: '240px', padding: '6px 10px', fontSize: '0.84rem' }}
+                    placeholder="Search faculty or course..."
+                    value={facultySearch}
+                    onChange={(e) => setFacultySearch(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="card-table-wrapper">
+                <table className="data-table data-table--wide data-table--sticky-actions">
+                  <thead>
+                    <tr>
+                      <th>Faculty Member</th>
+                      <th>Courses</th>
+                      <th>Extra Duties</th>
+                      <th>Own Subject</th>
+                      <th>Total</th>
+                      <th>Remaining Capacity</th>
+                      <th>Exemptions / Flags</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredFaculty.map((member) => (
+                      <tr key={member.name}>
+                        <td style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>{member.name}</td>
+                        <td style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)', maxWidth: 260 }}>
+                          {member.courses?.length ? member.courses.join(', ') : '—'}
+                        </td>
+                        <td style={{ fontWeight: 700 }}>{member.extra_duties}</td>
+                        <td>{member.own_subject_duties}</td>
+                        <td>{member.total_duties}</td>
+                        <td>
+                          <StatusPill
+                            tone={
+                              member.is_ecr
+                                ? 'info'
+                                : member.remaining_extra_capacity === 0
+                                  ? 'danger'
+                                  : member.remaining_extra_capacity <= 1
+                                    ? 'warning'
+                                    : 'success'
+                            }
+                          >
+                            {member.is_ecr
+                              ? 'ECR exempt'
+                              : `${member.remaining_extra_capacity} of ${extraDutyCap} left`}
+                          </StatusPill>
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {member.is_ecr && <StatusPill tone="info">ECR operational</StatusPill>}
+                            {member.is_senior && <StatusPill tone="warning">Senior priority</StatusPill>}
+                            {!member.is_ecr && member.extra_duties >= extraDutyCap && (
+                              <StatusPill tone="danger">Cap reached</StatusPill>
+                            )}
+                            {!member.is_ecr && member.extra_duties < extraDutyCap && (
+                              <StatusPill tone="success">Eligible</StatusPill>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {!filteredFaculty.length && (
+                      <tr>
+                        <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--itms-text-muted)' }}>
+                          No faculty members matched your search.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {rosterView === 'issues' && (
+            <>
+              <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <ShieldCheck size={16} color="var(--iiui-navy)" />
+                  <strong style={{ color: 'var(--iiui-navy)' }}>Roster validation &amp; policy issues</strong>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <StatusPill tone={issueErrorCount ? 'danger' : 'success'}>
+                    {issueErrorCount} error(s)
+                  </StatusPill>
+                  <StatusPill tone={issueWarningCount ? 'warning' : 'success'}>
+                    {issueWarningCount} warning(s)
+                  </StatusPill>
+                </div>
+              </div>
+              {!rosterIssues.length ? (
+                <div
+                  className="card-table-wrapper"
+                  style={{
+                    padding: '2rem',
+                    textAlign: 'center',
+                    color: '#15803d',
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                  }}
+                >
+                  <CheckCircle2 size={28} style={{ marginBottom: 6 }} />
+                  <div style={{ fontWeight: 700 }}>Roster passes every hard rule.</div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--itms-text-muted)', marginTop: 4 }}>
+                    No understaffed rooms, cap breaches, ECR hall assignments, or lab coverage conflicts.
+                  </div>
+                </div>
+              ) : (
+                <div className="card-table-wrapper">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Severity</th>
+                        <th>Code</th>
+                        <th>Issue</th>
+                        <th>Slot</th>
+                        <th>Room</th>
+                        <th>Instructor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rosterIssues.map((issue, index) => (
+                        <tr key={`${issue.code}-${issue.slot_id}-${issue.room_id}-${index}`}>
+                          <td>
+                            <StatusPill tone={issue.severity === 'error' ? 'danger' : 'warning'}>
+                              {issue.severity}
+                            </StatusPill>
+                          </td>
+                          <td style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>{issue.code}</td>
+                          <td style={{ fontSize: '0.84rem' }}>{issue.message}</td>
+                          <td style={{ fontSize: '0.78rem' }}>{issue.slot_id || '—'}</td>
+                          <td style={{ fontSize: '0.78rem' }}>{issue.room_id || '—'}</td>
+                          <td style={{ fontSize: '0.78rem' }}>{issue.instructor || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
         </>
       )}
 
@@ -1006,6 +1846,261 @@ export default function ExamOperationsPage({
           </div>
         </>
       )}
+
+      {/* Edit Invigilation Duty Modal */}
+      <Modal
+        isOpen={Boolean(editDuty)}
+        title="Edit Invigilation Duty"
+        onClose={() => setEditDuty(null)}
+        footer={(
+          <>
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={() => setEditDuty(null)}
+              disabled={isSavingDuty}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={saveDutyEdit}
+              disabled={isSavingDuty || !editForm.instructor}
+            >
+              {isSavingDuty ? 'Saving...' : 'Save Manual Override'}
+            </button>
+          </>
+        )}
+      >
+        {editDuty && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div
+              style={{
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: 8,
+                padding: '0.75rem 0.9rem',
+                fontSize: '0.84rem',
+                lineHeight: 1.5,
+              }}
+            >
+              <strong style={{ color: 'var(--iiui-navy)' }}>{formatSlotLabel(editDuty.slot_id)}</strong>
+              <div>
+                {editDuty.room_name || editDuty.room_id}
+                {' · '}
+                {editDuty.room_type === 'lab' ? 'Computer Lab' : 'Hall'}
+                {' · requires '}
+                {editDuty.required_invigilators} invigilator(s)
+              </div>
+              <div style={{ color: 'var(--itms-text-muted)' }}>
+                Current: {editDuty.instructor}
+                {editDuty.duty_type === 'own_subject' ? ' (own subject, exempt)' : ' (extra duty, counted)'}
+              </div>
+            </div>
+
+            <label className="form-label">
+              Invigilator
+              <select
+                className="form-control"
+                value={editForm.instructor}
+                onChange={(event) => setEditForm((current) => ({ ...current, instructor: event.target.value }))}
+              >
+                <option value="">Select faculty member</option>
+                {editCandidates.map((member) => (
+                  <option key={member.name} value={member.name}>
+                    {member.name}
+                    {member.is_ecr
+                      ? ' · ECR exempt'
+                      : ` · ${member.extra_duties}/${extraDutyCap} extra duties`}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="form-label">
+              Duty Status
+              <select
+                className="form-control"
+                value={editForm.status}
+                onChange={(event) => setEditForm((current) => ({ ...current, status: event.target.value }))}
+              >
+                {DUTY_STATUS_OPTIONS.map((status) => (
+                  <option key={status} value={status}>{status}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="form-label">
+              Notes
+              <textarea
+                className="form-control"
+                rows={3}
+                maxLength={2000}
+                placeholder="Reason for manual override, replacement context, etc."
+                value={editForm.notes}
+                onChange={(event) => setEditForm((current) => ({ ...current, notes: event.target.value }))}
+              />
+            </label>
+
+            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--itms-text-muted)', lineHeight: 1.5 }}>
+              Saving marks this duty as a manual override. Recalculation preserves it by default, while
+              room ratios, ECR exemptions, lab instructor requirements, same-slot clashes, and the
+              {` ${extraDutyCap}-duty cap `}are still enforced.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      {/* Add Manual Duty Modal */}
+      <Modal
+        isOpen={addDutyOpen}
+        title="Add Manual Invigilation Duty"
+        onClose={() => setAddDutyOpen(false)}
+        footer={(
+          <>
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={() => setAddDutyOpen(false)}
+              disabled={isSavingDuty}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={saveAddDuty}
+              disabled={isSavingDuty || !addDutyForm.slot_id || !addDutyForm.room_id || !addDutyForm.instructor}
+            >
+              {isSavingDuty ? 'Adding...' : 'Add Manual Duty'}
+            </button>
+          </>
+        )}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+          <label className="form-label">
+            Exam Slot
+            <select
+              className="form-control"
+              value={addDutyForm.slot_id}
+              onChange={(event) => {
+                const slotId = event.target.value;
+                const slot = rosterSlots.find((item) => item.slot_id === slotId);
+                const room = slot?.rooms.find((item) => item.missing > 0);
+                setAddDutyForm({
+                  ...EMPTY_ADD_DUTY,
+                  slot_id: slotId,
+                  room_id: room?.room_id || '',
+                });
+              }}
+            >
+              <option value="">Select examination slot</option>
+              {rosterSlots.map((slot) => {
+                const missing = slot.rooms.reduce((total, room) => total + room.missing, 0);
+                return (
+                  <option key={slot.slot_id} value={slot.slot_id}>
+                    {slot.date} ({slot.start_time} - {slot.end_time}) · {missing} missing
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+
+          <label className="form-label">
+            Room / Lab
+            <select
+              className="form-control"
+              value={addDutyForm.room_id}
+              disabled={!addDutyForm.slot_id}
+              onChange={(event) => setAddDutyForm((current) => ({
+                ...current,
+                room_id: event.target.value,
+                instructor: '',
+              }))}
+            >
+              <option value="">Select room needing an invigilator</option>
+              {addAvailableRooms.map((room) => (
+                <option key={room.room_id} value={room.room_id}>
+                  {room.room_name} · {room.is_lab ? 'Lab' : 'Hall'} · {room.missing} missing
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {addDutyForm.slot_id && !addAvailableRooms.length && (
+            <div
+              style={{
+                background: '#f0fdf4',
+                border: '1px solid #bbf7d0',
+                borderRadius: 8,
+                padding: '0.65rem 0.8rem',
+                fontSize: '0.8rem',
+                color: '#15803d',
+              }}
+            >
+              Every active room in this slot is fully staffed. Choose another slot or edit an existing assignment.
+            </div>
+          )}
+
+          <label className="form-label">
+            Invigilator
+            <select
+              className="form-control"
+              value={addDutyForm.instructor}
+              disabled={!addDutyForm.room_id}
+              onChange={(event) => setAddDutyForm((current) => ({ ...current, instructor: event.target.value }))}
+            >
+              <option value="">Select faculty member</option>
+              {addCandidates.map((member) => (
+                <option key={member.name} value={member.name}>
+                  {member.name}
+                  {member.is_ecr
+                    ? ' · ECR exempt'
+                    : ` · ${member.extra_duties}/${extraDutyCap} extra duties`}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {addRoomContext?.is_lab && addRoomContext.lab_teachers?.length > 0 && (
+            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
+              Lab rule: this room must be covered by its course instructor
+              {` (${addRoomContext.lab_teachers.join(', ')})`}.
+            </p>
+          )}
+
+          <label className="form-label">
+            Duty Status
+            <select
+              className="form-control"
+              value={addDutyForm.status}
+              onChange={(event) => setAddDutyForm((current) => ({ ...current, status: event.target.value }))}
+            >
+              {DUTY_STATUS_OPTIONS.map((status) => (
+                <option key={status} value={status}>{status}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="form-label">
+            Notes
+            <textarea
+              className="form-control"
+              rows={3}
+              maxLength={2000}
+              placeholder="Reason for manual addition..."
+              value={addDutyForm.notes}
+              onChange={(event) => setAddDutyForm((current) => ({ ...current, notes: event.target.value }))}
+            />
+          </label>
+
+          <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--itms-text-muted)', lineHeight: 1.5 }}>
+            The backend validates the room ratio, ECR exemption, lab instructor requirement,
+            same-slot clash, and {extraDutyCap}-duty cap before saving. Invalid additions are rejected.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

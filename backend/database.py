@@ -101,7 +101,11 @@ class SQLiteDatabase:
                     instructor TEXT NOT NULL,
                     duty_type TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'assigned',
+                    source TEXT NOT NULL DEFAULT 'auto',
+                    is_counted INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT '',
                     UNIQUE(slot_id, room_id, instructor)
                 );
                 CREATE TABLE IF NOT EXISTS umc_reports (
@@ -141,6 +145,37 @@ class SQLiteDatabase:
                 connection.execute(
                     "ALTER TABLE enrolments ADD COLUMN attendance_percent REAL NOT NULL DEFAULT 100"
                 )
+
+            # Invigilation roster migrations.  Existing installations may have
+            # the original table without manual-override metadata.
+            duty_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(invigilation_duties)")
+            }
+            duty_migrations = (
+                ("source", "TEXT NOT NULL DEFAULT 'auto'"),
+                ("is_counted", "INTEGER NOT NULL DEFAULT 1"),
+                ("notes", "TEXT NOT NULL DEFAULT ''"),
+                ("updated_at", "TEXT NOT NULL DEFAULT ''"),
+            )
+            for column, definition in duty_migrations:
+                if column not in duty_columns:
+                    connection.execute(
+                        f"ALTER TABLE invigilation_duties ADD COLUMN {column} {definition}"
+                    )
+            connection.execute(
+                "UPDATE invigilation_duties "
+                "SET is_counted = CASE WHEN duty_type = 'extra' THEN 1 ELSE 0 END"
+            )
+            connection.execute(
+                "UPDATE invigilation_duties SET updated_at = created_at WHERE updated_at = ''"
+            )
+
+            # A lab course can legitimately be split across multiple lab rooms
+            # with the same course instructor.  The service enforces one room
+            # per instructor for halls and prevents lab/hall overlaps; a global
+            # (slot, instructor) database index would incorrectly reject the
+            # split-lab case.
+            connection.execute("DROP INDEX IF EXISTS idx_invigilation_slot_instructor")
 
     def load_master_data(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         with self.connect() as connection:
@@ -315,11 +350,16 @@ class SQLiteDatabase:
             connection.execute("DELETE FROM invigilation_duties")
             connection.executemany(
                 "INSERT INTO invigilation_duties "
-                "(id, slot_id, room_id, instructor, duty_type, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, slot_id, room_id, instructor, duty_type, status, source, "
+                "is_counted, notes, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(
                     duty["id"], duty["slot_id"], duty["room_id"], duty["instructor"],
-                    duty["duty_type"], duty.get("status", "assigned"), duty["created_at"],
+                    duty["duty_type"], duty.get("status", "assigned"),
+                    duty.get("source", "auto"),
+                    int(duty.get("is_counted", 1 if duty["duty_type"] == "extra" else 0)),
+                    duty.get("notes", ""), duty["created_at"],
+                    duty.get("updated_at") or duty["created_at"],
                 ) for duty in duties],
             )
 
@@ -337,6 +377,73 @@ class SQLiteDatabase:
         query += " ORDER BY slot_id, room_id, instructor"
         with self.connect() as connection:
             return [dict(row) for row in connection.execute(query, params)]
+
+    def get_invigilation_duty(self, duty_id: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM invigilation_duties WHERE id = ?", (duty_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_invigilation_duty(self, duty: Dict[str, Any]) -> Dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO invigilation_duties "
+                "(id, slot_id, room_id, instructor, duty_type, status, source, "
+                "is_counted, notes, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    duty["id"], duty["slot_id"], duty["room_id"], duty["instructor"],
+                    duty["duty_type"], duty.get("status", "assigned"),
+                    duty.get("source", "manual"),
+                    int(duty.get("is_counted", 1 if duty["duty_type"] == "extra" else 0)),
+                    duty.get("notes", ""), duty["created_at"],
+                    duty.get("updated_at") or duty["created_at"],
+                ),
+            )
+        return self.get_invigilation_duty(duty["id"])
+
+    def update_invigilation_duty(
+        self, duty_id: str, values: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "instructor", "status", "notes", "duty_type", "is_counted",
+            "source", "updated_at",
+        }
+        updates = {
+            key: value for key, value in values.items()
+            if key in allowed and value is not None
+        }
+        if not updates:
+            return self.get_invigilation_duty(duty_id)
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE invigilation_duties SET {assignments} WHERE id = ?",
+                [*updates.values(), duty_id],
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_invigilation_duty(duty_id)
+
+    def delete_invigilation_duty(self, duty_id: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM invigilation_duties WHERE id = ?", (duty_id,)
+            )
+            return cursor.rowcount > 0
+
+    def delete_invigilation_duties_for_slot(self, slot_id: str) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM invigilation_duties WHERE slot_id = ?", (slot_id,)
+            )
+            return cursor.rowcount
+
+    def clear_invigilation_duties(self) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute("DELETE FROM invigilation_duties")
+            return cursor.rowcount
 
     def create_umc_report(self, report: Dict[str, Any], timestamp: str) -> Dict[str, Any]:
         with self.connect() as connection:
