@@ -43,6 +43,8 @@ export const masterDataService = {
   clearAllTimeSlots: () => http.delete('/time-slots'),
   generateSlots: (params) => http.post('/time-slots/generate', params),
   createPresetSlots: (params) => http.post('/time-slots/presets', params),
+  getPresetTemplates: () => http.get('/time-slots/presets/templates'),
+  savePresetTemplates: (templates) => http.put('/time-slots/presets/templates', templates),
   bulkDeleteSlots: (ids) => http.post('/time-slots/bulk-delete', { slot_ids: ids }),
   bulkShiftSlots: (ids, days) => http.post('/time-slots/bulk-shift', { slot_ids: ids, shift_days: days }),
 

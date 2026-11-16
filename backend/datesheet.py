@@ -23,6 +23,7 @@ from datetime import datetime
 from collections import defaultdict
 import copy
 import math
+import re
 from data import store, enrolment_type
 
 
@@ -107,6 +108,8 @@ def generate_datesheet(
     student_day_count = {}
     # teacher -> set of slot ids already scheduled (faculty clash guard)
     teacher_slots = defaultdict(set)
+    # cohort -> {date_str: count} for tracking study gap between theory papers
+    batch_written_dates = defaultdict(lambda: defaultdict(int))
     unplaced = []
     datesheet = []  # one entry per (course, slot)
 
@@ -215,6 +218,9 @@ def generate_datesheet(
                     student_regular_days.setdefault(r, {}).setdefault(slot["date"], []).append({
                         "code": code, "is_lab": False,
                     })
+        cohorts = {(u["program"], u["batch"]) for u in units if u.get("program") and u.get("batch")}
+        for cohort in cohorts:
+            batch_written_dates[cohort][slot["date"]] += 1
 
     def unplace_written_course(code: str, slot: Dict[str, Any]) -> None:
         nonlocal datesheet
@@ -232,6 +238,35 @@ def generate_datesheet(
                 if enrolment_type(r, code) == "regular":
                     regs = student_regular_days.get(r, {}).get(slot["date"], [])
                     student_regular_days[r][slot["date"]] = [p for p in regs if p["code"] != code]
+        cohorts = {(u["program"], u["batch"]) for u in units if u.get("program") and u.get("batch")}
+        for cohort in cohorts:
+            if slot["date"] in batch_written_dates[cohort]:
+                batch_written_dates[cohort][slot["date"]] -= 1
+                if batch_written_dates[cohort][slot["date"]] <= 0:
+                    del batch_written_dates[cohort][slot["date"]]
+
+    def get_batch_gap_penalty(code: str, slot: Dict[str, Any]) -> int:
+        s_date_str = slot.get("date", "")
+        try:
+            s_date = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+        except Exception:
+            return 0
+
+        cohorts = {(u["program"], u["batch"]) for u in written_groups[code] if u.get("program") and u.get("batch")}
+        penalty = 0
+        for cohort in cohorts:
+            for d_str in batch_written_dates[cohort]:
+                if d_str == s_date_str:
+                    continue
+                try:
+                    d = datetime.strptime(d_str, "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                diff = abs((s_date - d).days)
+                if diff == 1:
+                    # Consecutive calendar days -> 0 study preparation days!
+                    penalty += 50
+        return penalty
 
     # Pre-pin IT332 with CS344 in Slot S1 (fills vacant space for Dr. Adeel and utilizes 90.7% of halls)
     if "IT332" in written_groups and "CS344" in written_groups and sorted_slots:
@@ -247,6 +282,9 @@ def generate_datesheet(
         reverse=True,
     )
 
+    unique_dates_count = len(set(s["date"] for s in sorted_slots))
+    is_terminal_or_final = unique_dates_count >= 10
+
     def solve_written(idx=0):
         if idx == len(all_written_codes):
             return True
@@ -254,13 +292,15 @@ def generate_datesheet(
         needed = sum(len(u["student_roll_numbers"]) for u in written_groups[code])
 
         def slot_priority(s):
+            gap_pen = get_batch_gap_penalty(code, s) if is_terminal_or_final else 0
             curr = sum(len(u["student_roll_numbers"]) for u in slot_courses_map[s["id"]] if not u.get("is_lab"))
             tot = curr + needed
+            s_num = int(re.sub(r"\D", "", s["id"]) or 0)
             if curr > 0:
                 if tot >= 240 and tot <= hall_cap:
-                    return (0, -tot)
-                return (1, -tot)
-            return (2, int(s["id"][1:]))
+                    return (gap_pen, 0, -tot)
+                return (gap_pen, 1, -tot)
+            return (gap_pen, 2, s_num)
 
         ordered_slots = sorted(sorted_slots, key=slot_priority)
         for slot in ordered_slots:
@@ -277,7 +317,8 @@ def generate_datesheet(
         for code in all_written_codes:
             if any(u["code"] == code for u_list in slot_courses_map.values() for u in u_list):
                 continue
-            for slot in sorted_slots:
+            ordered_fallback = sorted(sorted_slots, key=lambda s: get_batch_gap_penalty(code, s) if is_terminal_or_final else 0)
+            for slot in ordered_fallback:
                 if can_place_written_course(code, slot):
                     place_written_course(code, slot)
                     break

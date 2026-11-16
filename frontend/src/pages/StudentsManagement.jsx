@@ -1,5 +1,4 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 
 const PRESET_PROGRAMS = ['BSCS', 'BSIT', 'BSSE'];
@@ -215,13 +214,12 @@ export default function StudentsManagement({
         <div>
           <h1 className="itms-dash__pageTitle">Students &amp; Course Enrolments Management</h1>
           <p className="itms-dash__pageSub">
-            Manage student registrations, programs, batches, sections, and course enrolments with Regular and Repeat/Backlog designations.
+            Manage student registrations, programs, batches, sections, and course enrolments with Regular and Repeater designations.
           </p>
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
-            <Plus size={16} />
-            Register Student
+            + Register Student
           </button>
         </div>
       </div>
@@ -236,7 +234,7 @@ export default function StudentsManagement({
 
         <article className="itms-dash__statCard">
           <div className="itms-dash__statBody">
-            <span className="itms-dash__statLabel">Repeat / Backlog Candidates</span>
+            <span className="itms-dash__statLabel">Repeater Candidates</span>
             <span className="itms-dash__statValue">{backStudentsCount}</span>
           </div>
         </article>
@@ -376,6 +374,7 @@ export default function StudentsManagement({
                         <span
                           key={idx}
                           className={`badge ${e.type === 'back' ? 'badge--warning student-overflow-badge' : 'badge--outline'}`}
+                          title={e.type === 'back' ? 'Repeater Course' : 'Regular Course'}
                           style={{
                             fontSize: '0.70rem',
                             padding: '2px 6px',
@@ -384,7 +383,6 @@ export default function StudentsManagement({
                           }}
                         >
                           {e.course}
-                          {e.type === 'back' ? ' (Repeat)' : ''}
                           {(e.attendance_percent ?? 100) < 75 ? ` · ${e.attendance_percent}% attendance (ineligible)` : ''}
                         </span>
                       ))}
@@ -404,7 +402,7 @@ export default function StudentsManagement({
                         className="btn btn--sm btn--danger"
                         onClick={() => setDeleteConfirm(s.roll_no)}
                       >
-                        <Trash2 size={13} />
+                        Delete
                       </button>
                     </div>
                   </td>
@@ -561,7 +559,7 @@ export default function StudentsManagement({
                     onChange={(e) => handleEnrolmentChange(idx, 'type', e.target.value)}
                   >
                     <option value="regular">Regular</option>
-                    <option value="back">Back-Paper</option>
+                    <option value="back">Repeater</option>
                   </select>
 
                   <label style={{ minWidth: 105, fontSize: '0.72rem', color: 'var(--itms-text-muted)' }}>
@@ -583,7 +581,7 @@ export default function StudentsManagement({
                     onClick={() => handleRemoveEnrolmentRow(idx)}
                     title="Remove course"
                   >
-                    <Trash2 size={13} />
+                    Remove
                   </button>
                 </div>
               ))}
@@ -632,7 +630,6 @@ export default function StudentsManagement({
               onClick={() => handleDelete(deleteConfirm)}
               disabled={isSubmitting}
             >
-              <Trash2 size={14} />
               {isSubmitting ? 'Deleting...' : 'Delete Student'}
             </button>
           </div>

@@ -1,30 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import {
-  Printer,
-  Download,
-  RotateCcw,
-  Clock,
-  Calendar,
-  Layers,
-  Edit3,
-  Save,
-  X,
-  Trash2,
-  ArrowRightLeft,
-  Plus,
-  Check,
-  AlertCircle,
-  UserCheck,
-  Users,
-  Building2,
-  ChevronRight,
-  ChevronDown,
-  ChevronUp,
-  LayoutGrid,
-  List,
-} from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import Modal from '../components/Modal.jsx';
 import { seatingService } from '../services/index.js';
+import { formatTime12, formatTimeRange12 } from '../utils/timeFormat.js';
 
 const getCleanTeacher = (inst) => {
   if (!inst) return '';
@@ -74,7 +51,14 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
   // Venue Directory States (Quick Navigation)
   const [venueFilter, setVenueFilter] = useState('all'); // 'all' | 'hall' | 'lab'
   const [venueViewMode, setVenueViewMode] = useState('grid'); // 'grid' | 'table'
-  const [isVenueDirectoryOpen, setIsVenueDirectoryOpen] = useState(true);
+  const [isVenueDirectoryOpen, setIsVenueDirectoryOpen] = useState(false);
+
+  // Room Utilization Notification / Alerts State
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [hasSeenNotifications, setHasSeenNotifications] = useState(false);
+  const [checkedAlerts, setCheckedAlerts] = useState({});
+  const [dismissedAlerts, setDismissedAlerts] = useState({});
+  const notificationRef = useRef(null);
 
   const distinctDates = useMemo(() => {
     return Array.from(new Set(slots.map((s) => s.date))).filter(Boolean);
@@ -166,22 +150,77 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
     });
   }, [activeRooms]);
 
+  // Room Utilization Alerts (< 50% capacity utilized)
+  const roomAlerts = useMemo(() => {
+    if (!activeRooms || activeRooms.length === 0) return [];
+    return activeRooms
+      .map((r) => {
+        const seated = Number(r.seated || 0);
+        const cap = Number(r.usable_capacity || r.capacity || (r.rows && r.columns ? r.rows * r.columns : 0) || 0);
+        const pct = cap > 0 ? seated / cap : 1;
+        return {
+          roomId: r.room_id,
+          roomName: r.room_name,
+          seated,
+          capacity: cap,
+          utilization: pct,
+          isLab: /lab/i.test(r.room_name || '') || r.room_type === 'lab',
+        };
+      })
+      .filter((item) => item.seated > 0 && item.capacity > 0 && item.utilization < 0.5);
+  }, [activeRooms]);
+
+  const visibleAlerts = useMemo(() => {
+    return roomAlerts.filter((a) => !dismissedAlerts[a.roomId]);
+  }, [roomAlerts, dismissedAlerts]);
+
+  const unreadAlertsCount = visibleAlerts.length;
+
+  // Reset alert seen/dismissed states when slot changes
+  useEffect(() => {
+    setHasSeenNotifications(false);
+    setCheckedAlerts({});
+    setDismissedAlerts({});
+    setIsNotificationOpen(false);
+  }, [selectedSlotId]);
+
+  // Click outside to close notification popup
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (notificationRef.current && !notificationRef.current.contains(event.target)) {
+        setIsNotificationOpen(false);
+      }
+    };
+    if (isNotificationOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isNotificationOpen]);
+
+  const handleCheckRoom = (roomId) => {
+    setCheckedAlerts((prev) => ({ ...prev, [roomId]: true }));
+    const element = document.getElementById(`room-sheet-${roomId}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      element.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease';
+      element.style.boxShadow = '0 0 0 4px #2563eb';
+      element.style.borderColor = '#2563eb';
+      setTimeout(() => {
+        element.style.boxShadow = '';
+        element.style.borderColor = '';
+      }, 2500);
+    }
+  };
+
+  const handleDismissAlert = (roomId) => {
+    setDismissedAlerts((prev) => ({ ...prev, [roomId]: true }));
+  };
+
   // Per-room state for reserve consolidation actions
   const [reserveApplied, setReserveApplied] = useState({});
   const [dismissedLowFill, setDismissedLowFill] = useState(false);
-
-  const overflowRollSet = useMemo(() => {
-    const set = new Set();
-    (students || []).forEach((s) => {
-      const roll = String(s.roll_no || '').trim();
-      const hasOverflow = (s.enrolments || s.courses_enrolled || []).some((e) => {
-        const t = String(e?.type || '').toLowerCase();
-        return t === 'back' || t.includes('back') || t.includes('overflow') || t.includes('repeat');
-      });
-      if (roll && hasOverflow) set.add(roll);
-    });
-    return set;
-  }, [students]);
 
   const roomMasterMap = useMemo(() => {
     const map = {};
@@ -759,17 +798,11 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
       const maxRows = Math.max(room.rows || 0, ...sheet.columns.map((c) => c.roll_nos.length), 0);
       const isRoomEmpty = (room.seated || 0) === 0;
 
-      const reserveCount = Math.max(0, Number(room.reserve_capacity || 0));
-      const emptyCells = [];
-      sheet.columns.forEach((col, colIdx) => {
-        for (let ri = 0; ri < maxRows; ri++) {
-          const rollVal = String((col.roll_nos || [])[ri] || '').trim();
-          if (!rollVal) emptyCells.push(`${colIdx}:${ri}`);
-        }
-      });
-      const reservedSet = new Set(
-        reserveCount > 0 ? emptyCells.slice(Math.max(0, emptyCells.length - reserveCount)) : []
+      const hasBufferRow = Boolean(
+        (Number(room.reserve_capacity || 0) > 0 || room.has_buffer_row) &&
+        Number(room.capacity || 0) >= 50
       );
+      const bufferSeatsCount = hasBufferRow ? Number(room.reserve_capacity || room.columns || 0) : 0;
 
       const currentSlotId = planData.slot_id || selectedSlotId;
       const dutyMatches = duties.filter(
@@ -800,19 +833,15 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
             <h3>DEPARTMENT OF COMPUTER SCIENCE &amp; INFORMATION TECHNOLOGY</h3>
             <h4>OFFICIAL EXAMINATION SEATING ARRANGEMENT SHEET</h4>
             <p>
-              <strong>Date:</strong> {planData.date} &bull; <strong>Time Slot:</strong> {planData.start_time} &ndash;{' '}
-              {planData.end_time} &bull; <strong>Room:</strong> {room.room_name}
+              <strong>Date:</strong> {planData.date} &bull; <strong>Time Slot:</strong>{' '}
+              {formatTimeRange12(planData.start_time, planData.end_time)} &bull; <strong>Room:</strong> {room.room_name}
               {' '}&bull; <strong>Capacity:</strong>{' '}
-              {Number(room.capacity || (room.rows || 0) * (room.columns || 0))} Usable
-              {Number(room.reserve_capacity || 0) > 0
-                ? ` + ${Number(room.reserve_capacity || 0)} Reserved`
-                : ''}
+              {Number(room.capacity || (room.rows || 0) * (room.columns || 0))}
             </p>
 
             {/* Official Invigilator Assignment Strip */}
             <div className="dcs-seating-sheet__invigilation-bar">
               <span className="dcs-seating-sheet__invig-title">
-                <UserCheck size={14} style={{ verticalAlign: 'text-bottom', marginRight: 5 }} />
                 <strong>Invigilator(s):</strong>
               </span>
               {roomInvigilators.length > 0 ? (
@@ -820,15 +849,12 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                   {roomInvigilators.map((inv, idx) => (
                     <span key={inv.id || idx} className="dcs-invig-pill">
                       <strong>{inv.instructor}</strong>
-                      <span className={`dcs-invig-type ${inv.duty_type === 'own_subject' ? 'dcs-invig-type--own' : 'dcs-invig-type--hall'}`}>
-                        {inv.duty_type === 'own_subject' ? 'Course Teacher' : 'Invigilator'}
-                      </span>
                     </span>
                   ))}
                 </div>
               ) : (
                 <span className="dcs-seating-sheet__invig-empty">
-                  Not assigned yet (Generate roster in Operations)
+                  Not assigned yet
                 </span>
               )}
             </div>
@@ -866,8 +892,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                   title={`Add an extra seat row to ${room.room_name}`}
                   style={{ fontSize: '0.78rem', padding: '3px 8px' }}
                 >
-                  <Plus size={13} />
-                  Add Row
+                  + Add Row
                 </button>
                 {(room.seated || 0) > 0 && (
                   <button
@@ -885,7 +910,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                     title={`Transfer all students from ${room.room_name} to another room`}
                     style={{ fontSize: '0.78rem', padding: '3px 8px', color: '#0369a1', borderColor: '#bae6fd' }}
                   >
-                    <ArrowRightLeft size={13} />
                     Transfer All to...
                   </button>
                 )}
@@ -970,7 +994,8 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                   <tr key={ri}>
                     {sheet.columns.map((col, colIdx) => {
                       const rollVal = (col.roll_nos[ri] || '').trim();
-                      const isVacant = !rollVal;
+                      const isBufferCell = (hasBufferRow && ri === maxRows - 1) || rollVal.toLowerCase() === 'buffer';
+                      const isVacant = !rollVal && !isBufferCell;
                       const isSelected =
                         selectedSeat &&
                         selectedSeat.roomIdx === roomIdx &&
@@ -978,112 +1003,79 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                         selectedSeat.rowIdx === ri;
                       const isTargetVacant = selectedSeat && isVacant;
 
-                      const isOverflow = rollVal && overflowRollSet.has(rollVal);
-                      const isReservedSeat = !rollVal && reservedSet.has(`${colIdx}:${ri}`);
                       let cellClass = '';
                       if (isEditMode) {
                         cellClass += ' seat-cell--editable';
                         if (isSelected) cellClass += ' seat-cell--selected';
                         else if (isTargetVacant) cellClass += ' seat-cell--vacant-target';
                       }
-                      if (isOverflow) {
-                        cellClass += ' student-overflow-cell';
-                      }
-                      if (isReservedSeat) {
-                        cellClass += ' seat-cell--reserved';
+                      if (isBufferCell) {
+                        cellClass += ' seat-cell--buffer';
                       }
 
                       return (
                         <td
                           key={col.column_no}
                           className={cellClass.trim()}
-                          onClick={() => isEditMode && handleCellClick(roomIdx, colIdx, ri)}
+                          onClick={() => isEditMode && !isBufferCell && handleCellClick(roomIdx, colIdx, ri)}
                           style={{
                             borderRight: '1px solid #cbd5e1',
                             fontWeight: rollVal ? 700 : 400,
                             fontSize: '0.74rem',
-                            fontFamily: rollVal || isReservedSeat ? 'monospace' : 'inherit',
+                            fontFamily: rollVal || isBufferCell ? 'monospace' : 'inherit',
                             background: isSelected
                               ? undefined
-                              : isOverflow
-                                ? '#fff1f2'
-                                : isReservedSeat
-                                  ? '#f8fafc'
-                                  : (isVacant ? '#fafafa' : 'transparent'),
-                            color: isOverflow ? '#b91c1c' : isReservedSeat ? '#64748b' : undefined,
-                            boxShadow: isOverflow ? 'inset 0 0 0 2px #ef4444' : isReservedSeat ? 'inset 0 0 0 1px dashed #94a3b8' : undefined,
+                              : isBufferCell
+                                ? '#fffbeb'
+                                : (isVacant ? '#fafafa' : 'transparent'),
+                            color: isBufferCell ? '#92400e' : undefined,
+                            boxShadow: isBufferCell ? 'inset 0 0 0 1px #fde68a' : undefined,
                             padding: '4px 6px',
                             minWidth: '85px',
                             maxWidth: '120px',
                             height: '26px',
                             position: 'relative',
+                            textAlign: isBufferCell ? 'center' : 'inherit',
                           }}
                           title={
-                            isEditMode
-                              ? rollVal
-                                ? `${isOverflow ? 'Repeat/Backlog candidate: ' : ''}Click to select ${rollVal} for move/swap`
-                                : selectedSeat
-                                  ? `Click to move ${selectedSeat.roll} here${isReservedSeat ? ' (reserved seat)' : ''}`
-                                  : isReservedSeat
-                                    ? 'Reserved seat (available for administration if needed)'
+                            isBufferCell
+                              ? 'Buffer seat (reserved in last row for repeaters and exam contingency)'
+                              : isEditMode
+                                ? rollVal
+                                  ? `Click to select ${rollVal} for move/swap`
+                                  : selectedSeat
+                                    ? `Click to move ${selectedSeat.roll} here`
                                     : 'Empty seat'
-                              : isOverflow && rollVal
-                                ? `Repeat/Backlog candidate: ${rollVal}`
-                                : isReservedSeat
-                                  ? 'Reserved seat (available for administration if needed)'
-                                  : undefined
+                                : undefined
                           }
                         >
-                          {rollVal || (isReservedSeat ? <span style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.02em' }}>Reserved</span> : (isEditMode ? <span style={{ color: '#cbd5e1', fontSize: '0.68rem' }}>·</span> : ''))}
+                          {isBufferCell ? (
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                padding: '1px 8px',
+                                borderRadius: '4px',
+                                fontSize: '0.68rem',
+                                fontWeight: 700,
+                                backgroundColor: '#fef3c7',
+                                color: '#92400e',
+                                border: '1px solid #fde68a',
+                                letterSpacing: '0.02em',
+                              }}
+                            >
+                              Buffer
+                            </span>
+                          ) : (
+                            rollVal || (isEditMode ? <span style={{ color: '#cbd5e1', fontSize: '0.68rem' }}>·</span> : '')
+                          )}
                         </td>
                       );
                     })}
                   </tr>
                 ))}
-                {reserveCount > 0 && (() => {
-                  const colCount = sheet.columns.length || 1;
-                  const reserveRowsCount = Math.ceil(reserveCount / colCount);
-                  return Array.from({ length: reserveRowsCount }, (_, rr) => (
-                    <tr key={`reserve-row-${rr}`} className="dcs-reserve-grid-row">
-                      {sheet.columns.map((col, colIdx) => {
-                        const reserveIndex = rr * colCount + colIdx;
-                        const isReserveCell = reserveIndex < reserveCount;
-                        return (
-                          <td
-                            key={`reserve-${col.column_no}-${rr}`}
-                            style={{
-                              borderRight: '1px solid #cbd5e1',
-                              fontSize: '0.72rem',
-                              fontFamily: 'monospace',
-                              fontWeight: 700,
-                              background: isReserveCell ? '#f8fafc' : '#fafafa',
-                              color: isReserveCell ? '#475569' : '#cbd5e1',
-                              boxShadow: isReserveCell ? 'inset 0 0 0 1px dashed #94a3b8' : undefined,
-                              padding: '4px 6px',
-                              minWidth: '85px',
-                              maxWidth: '120px',
-                              height: '26px',
-                              textAlign: 'center',
-                            }}
-                            title={isReserveCell ? `Reserved seat ${reserveIndex + 1} (available for administration if needed)` : ''}
-                          >
-                            {isReserveCell ? `Reserved ${String(reserveIndex + 1).padStart(2, '0')}` : ''}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ));
-                })()}
               </tbody>
             </table>
           </div>
-
-          {Number(room.reserve_capacity || 0) > 0 && (
-            <div className="dcs-reserve-panel" style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
-              <strong style={{ color: 'var(--iiui-navy)' }}>Reserve seats shown in grid:</strong>{' '}
-              {Number(room.reserve_capacity || 0)} seat{Number(room.reserve_capacity || 0) === 1 ? '' : 's'} labeled &quot;Reserved&quot; and kept available for administration if needed.
-            </div>
-          )}
         </div>
       );
     });
@@ -1143,7 +1135,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               >
                 {availableSlotsForDate.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.start_time} &ndash; {s.end_time}
+                    {formatTimeRange12(s.start_time, s.end_time)}
                   </option>
                 ))}
               </select>
@@ -1152,6 +1144,261 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
 
           {/* Right actions */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+            {/* Room Utilization Notification Button */}
+            <div style={{ position: 'relative' }} ref={notificationRef}>
+              <button
+                type="button"
+                className="btn btn--outline"
+                onClick={() => {
+                  setIsNotificationOpen((prev) => !prev);
+                  if (!isNotificationOpen) {
+                    setHasSeenNotifications(true);
+                  }
+                }}
+                style={{
+                  position: 'relative',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 12px',
+                  borderColor: !hasSeenNotifications && unreadAlertsCount > 0 ? '#ef4444' : undefined,
+                  backgroundColor: !hasSeenNotifications && unreadAlertsCount > 0 ? '#fef2f2' : undefined,
+                  color: !hasSeenNotifications && unreadAlertsCount > 0 ? '#b91c1c' : undefined,
+                }}
+                title="Room Utilization Alerts (< 50% capacity)"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                <span>Alerts</span>
+                {!hasSeenNotifications && unreadAlertsCount > 0 && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: '-6px',
+                      right: '-6px',
+                      backgroundColor: '#ef4444',
+                      color: '#ffffff',
+                      borderRadius: '9999px',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      minWidth: '18px',
+                      height: '18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '0 4px',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                    }}
+                  >
+                    {unreadAlertsCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification Popover Dropdown */}
+              {isNotificationOpen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: 'calc(100% + 8px)',
+                    width: '380px',
+                    maxHeight: '440px',
+                    overflowY: 'auto',
+                    backgroundColor: '#ffffff',
+                    borderRadius: '10px',
+                    boxShadow: '0 10px 25px -5px rgba(0,0,0,0.15), 0 8px 10px -6px rgba(0,0,0,0.1)',
+                    border: '1px solid #e2e8f0',
+                    zIndex: 1200,
+                    padding: '14px',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginBottom: '10px',
+                      paddingBottom: '8px',
+                      borderBottom: '1px solid #f1f5f9',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#1e293b' }}>
+                        Room Utilization Alerts
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                        Rooms with &lt; 50% seat utilization in this slot
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsNotificationOpen(false)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: '#94a3b8',
+                        fontSize: '1.1rem',
+                        lineHeight: 1,
+                        padding: '4px',
+                      }}
+                      title="Close"
+                    >
+                      &times;
+                    </button>
+                  </div>
+
+                  {visibleAlerts.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '16px 8px', color: '#059669' }}>
+                      <div style={{ fontSize: '1.4rem', marginBottom: '4px' }}>&#10003;</div>
+                      <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>All Rooms Well Utilized</div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '2px' }}>
+                        All active rooms are 50% or more utilized in this session.
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {visibleAlerts.map((alert) => {
+                        const isChecked = !!checkedAlerts[alert.roomId];
+                        const pctInt = Math.round(alert.utilization * 100);
+
+                        return (
+                          <div
+                            key={alert.roomId}
+                            style={{
+                              border: isChecked ? '1px solid #86efac' : '1px solid #fed7aa',
+                              backgroundColor: isChecked ? '#f0fdf4' : '#fffbeb',
+                              borderRadius: '8px',
+                              padding: '10px 12px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '6px',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <strong style={{ color: '#0f172a', fontSize: '0.88rem' }}>
+                                  {alert.roomName}
+                                </strong>
+                                <span
+                                  style={{
+                                    fontSize: '0.7rem',
+                                    padding: '1px 6px',
+                                    borderRadius: '4px',
+                                    backgroundColor: alert.isLab ? '#e0f2fe' : '#f1f5f9',
+                                    color: alert.isLab ? '#0369a1' : '#475569',
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {alert.isLab ? 'Lab' : 'Hall'}
+                                </span>
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: '0.74rem',
+                                  fontWeight: 700,
+                                  color: pctInt < 30 ? '#dc2626' : '#d97706',
+                                }}
+                              >
+                                {pctInt}% utilized
+                              </span>
+                            </div>
+
+                            <div style={{ fontSize: '0.78rem', color: '#4b5563' }}>
+                              <strong>{alert.seated}</strong> of <strong>{alert.capacity}</strong> seats occupied
+                            </div>
+
+                            {/* Mini progress bar */}
+                            <div
+                              style={{
+                                width: '100%',
+                                height: '6px',
+                                backgroundColor: '#e5e7eb',
+                                borderRadius: '3px',
+                                overflow: 'hidden',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: `${Math.min(pctInt, 100)}%`,
+                                  height: '100%',
+                                  backgroundColor: pctInt < 30 ? '#ef4444' : '#f59e0b',
+                                  borderRadius: '3px',
+                                }}
+                              />
+                            </div>
+
+                            {/* Actions: Check & Dismiss (✕) */}
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                marginTop: '4px',
+                                paddingTop: '4px',
+                                borderTop: isChecked ? '1px solid #dcfce7' : '1px solid #fef3c7',
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => handleCheckRoom(alert.roomId)}
+                                style={{
+                                  background: isChecked ? '#16a34a' : '#2563eb',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  padding: '4px 10px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                                title="Locate and highlight this room's seating sheet"
+                              >
+                                {isChecked ? '✓ Checked' : 'Check Room'}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDismissAlert(alert.roomId)}
+                                style={{
+                                  background: 'transparent',
+                                  color: '#9ca3af',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: '4px',
+                                  padding: '3px 8px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                }}
+                                title="Dismiss this alert"
+                              >
+                                ✕ Dismiss
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Edit Seating Plan Toggle Button */}
             <button
               type="button"
@@ -1167,9 +1414,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               }}
               disabled={isLoading || isPrintingAll || !plan}
               title={isEditMode ? 'Exit edit mode' : 'Customize & adjust seating arrangement'}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
             >
-              <Edit3 size={14} />
               {isEditMode ? 'Exit Edit Mode' : 'Edit Seating Plan'}
             </button>
 
@@ -1179,9 +1424,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               onClick={handleRegenerate}
               disabled={isLoading || !selectedSlotId || isPrintingAll}
               title="Recalculate allocations for this slot"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
             >
-              <RotateCcw size={14} />
               {isLoading ? 'Recalculating...' : 'Recalculate'}
             </button>
 
@@ -1192,13 +1435,9 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               style={{
                 pointerEvents: !plan ? 'none' : 'auto',
                 opacity: !plan ? 0.6 : 1,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.4rem',
               }}
               title="Download Excel spreadsheet for this slot"
             >
-              <Download size={14} />
               Export Excel
             </a>
 
@@ -1208,9 +1447,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               onClick={() => setIsPrintModalOpen(true)}
               disabled={isPrintingAll || !plan}
               title="Open print options popup"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
             >
-              <Printer size={15} />
               {isPrintingAll ? 'Preparing Print...' : 'Print Seating Plans...'}
             </button>
           </div>
@@ -1221,7 +1458,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
       {isEditMode && (
         <div className="seating-edit-banner no-print">
           <div className="seating-edit-banner__info">
-            <Edit3 size={20} color="#16a34a" />
             <div>
               <strong>Interactive Seating Editor Active:</strong>
               <span style={{ marginLeft: '6px', fontSize: '0.84rem' }}>
@@ -1250,14 +1486,10 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               onClick={handleSaveCustomPlan}
               disabled={isSaving || !hasChanges}
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.4rem',
                 background: '#16a34a',
                 borderColor: '#15803d',
               }}
             >
-              <Save size={14} />
               {isSaving ? 'Saving...' : 'Save Changes'}
             </button>
             <button
@@ -1289,7 +1521,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               }}
               title="Reset to algorithmic default arrangement"
             >
-              <RotateCcw size={13} />
               Reset to Default
             </button>
           </div>
@@ -1312,7 +1543,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
             gap: '0.5rem',
           }}
         >
-          <Check size={16} />
+          <span>✓</span>
           <strong>{saveSuccessMsg}</strong>
         </div>
       )}
@@ -1366,158 +1597,83 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
       {/* Slot Venues & Staffing Directory (Executive Overview & Quick Navigation) */}
       {plan && plan.rooms && plan.rooms.length > 0 && !bulkPlans.length && (
         <>
-          {/* Low-fill Admin Notice */}
-          {lowFillRooms.length > 0 && !dismissedLowFill && (
-            <div className="low-fill-notice no-print">
-              <div className="low-fill-notice__header">
-                <div className="low-fill-notice__icon">⚠️</div>
-                <div>
-                  <strong>Low Seat Utilisation Detected</strong>
-                  <p>
-                    The following venue(s) have 20% or fewer seats filled. Hall/room students can be consolidated into reserve/available seats of other halls only (optional), and lab students can be adjusted within other labs only.
-                  </p>
-                </div>
-                <button className="low-fill-notice__dismiss" onClick={() => setDismissedLowFill(true)} title="Dismiss">✕</button>
+
+
+          <div className={`slot-venues-directory no-print ${!isVenueDirectoryOpen ? 'slot-venues-directory--collapsed' : ''}`}>
+            <div className="slot-venues-directory__header">
+              <div className="slot-venues-directory__title-group">
+                <h3 className="slot-venues-directory__title">
+                  Slot Venues &amp; Invigilation Directory
+                </h3>
+                <span className="slot-venues-directory__count-badge">
+                  {activeRooms.length} {activeRooms.length === 1 ? 'Venue' : 'Venues'}
+                </span>
               </div>
-              <div className="low-fill-notice__rooms">
-                {lowFillRooms.map((r) => {
-                  const totalUsable =
-                    Number(r.total_usable_seats) ||
-                    (Number(r.capacity || r.rows * r.columns || 0) + Number(r.reserve_capacity || 0));
-                  const pct = totalUsable > 0 ? Math.round((Number(r.seated || 0) / totalUsable) * 100) : 0;
-                  const applied = reserveApplied[r.room_id];
-                  const isLabRoom = /lab/i.test(r.room_name || '') || r.room_type === 'lab';
-                  const otherAvailable = activeRooms
-                    .filter((room) => {
-                      if (room.room_id === r.room_id) return false;
-                      const targetIsLab = /lab/i.test(room.room_name || '') || room.room_type === 'lab';
-                      return isLabRoom ? targetIsLab : !targetIsLab;
-                    })
-                    .reduce((sum, room) => {
-                      const tu = Number(room.total_usable_seats) || (Number(room.capacity || 0) + Number(room.reserve_capacity || 0));
-                      return sum + Math.max(0, tu - Number(room.seated || 0));
-                    }, 0);
-                  return (
-                    <div key={r.room_id} className="low-fill-notice__room-row">
-                      <div className="low-fill-notice__room-info">
-                        <strong>{r.room_name}</strong>
-                        <span className="low-fill-notice__pct">{r.seated || 0} / {totalUsable} seats ({pct}% filled)</span>
-                        <span className="low-fill-notice__reserve-tag">
-                          +{otherAvailable} available seat{otherAvailable === 1 ? '' : 's'} in other {isLabRoom ? 'labs' : 'halls/rooms'}
-                        </span>
-                      </div>
+
+              <div className="slot-venues-directory__controls">
+                {isVenueDirectoryOpen && (
+                  <>
+                    {/* Category Filter Pills */}
+                    <div className="venue-filter-pills">
                       <button
-                        className={`btn btn--sm ${applied ? 'btn--success' : 'btn--outline'}`}
-                        onClick={() => handleConsolidateLowFillRoom(r.room_id)}
-                        disabled={applied || isSaving}
-                        title={
-                          applied
-                            ? 'Consolidation applied (save to persist)'
-                            : isLabRoom
-                              ? 'Move students into other labs only and vacate this lab'
-                              : 'Move students into reserve/available seats of other halls and vacate this room'
-                        }
+                        type="button"
+                        className={`venue-filter-pill-btn ${venueFilter === 'all' ? 'venue-filter-pill-btn--active' : ''}`}
+                        onClick={() => setVenueFilter('all')}
                       >
-                        {applied ? '✓ Consolidation Prepared' : 'Consolidate into Reserve Seats (Vacate Room)'}
+                        All ({activeRooms.length})
+                      </button>
+                      <button
+                        type="button"
+                        className={`venue-filter-pill-btn ${venueFilter === 'hall' ? 'venue-filter-pill-btn--active' : ''}`}
+                        onClick={() => setVenueFilter('hall')}
+                      >
+                        Halls ({hallsCount})
+                      </button>
+                      <button
+                        type="button"
+                        className={`venue-filter-pill-btn ${venueFilter === 'lab' ? 'venue-filter-pill-btn--active' : ''}`}
+                        onClick={() => setVenueFilter('lab')}
+                      >
+                        Labs ({labsCount})
                       </button>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
-          <div className="slot-venues-directory no-print">
-          <div className="slot-venues-directory__header">
-            <div className="slot-venues-directory__title-group">
-              <h3 className="slot-venues-directory__title">
-                <Layers size={17} style={{ color: 'var(--iiui-green)' }} />
-                Slot Venues &amp; Invigilation Directory
-              </h3>
-              <div className="slot-venues-directory__stats">
-                <span className="slot-venues-directory__stat-pill slot-venues-directory__stat-pill--navy">
-                  <Building2 size={12} />
-                  {activeRooms.length} Active Venues ({hallsCount} Halls/Rooms, {labsCount} Labs)
-                </span>
-                <span className="slot-venues-directory__stat-pill slot-venues-directory__stat-pill--green">
-                  <Users size={12} />
-                  {totalSeatedInSlot} Students Seated
-                </span>
-                <span className="slot-venues-directory__stat-pill">
-                  <UserCheck size={12} />
-                  {totalStaffedInSlot} Duties Assigned
-                </span>
-              </div>
-            </div>
-
-            <div className="slot-venues-directory__controls">
-              {/* Category Filter Pills */}
-              <div className="venue-filter-pills">
-                <button
-                  type="button"
-                  className={`venue-filter-pill-btn ${venueFilter === 'all' ? 'venue-filter-pill-btn--active' : ''}`}
-                  onClick={() => setVenueFilter('all')}
-                >
-                  All ({activeRooms.length})
-                </button>
-                <button
-                  type="button"
-                  className={`venue-filter-pill-btn ${venueFilter === 'hall' ? 'venue-filter-pill-btn--active' : ''}`}
-                  onClick={() => setVenueFilter('hall')}
-                >
-                  Halls ({hallsCount})
-                </button>
-                <button
-                  type="button"
-                  className={`venue-filter-pill-btn ${venueFilter === 'lab' ? 'venue-filter-pill-btn--active' : ''}`}
-                  onClick={() => setVenueFilter('lab')}
-                >
-                  Labs ({labsCount})
-                </button>
-              </div>
-
-              {/* View Switch: Grid vs Table */}
-              <div className="venue-view-toggle">
-                <button
-                  type="button"
-                  className={`venue-view-toggle-btn ${venueViewMode === 'grid' ? 'venue-view-toggle-btn--active' : ''}`}
-                  onClick={() => setVenueViewMode('grid')}
-                  title="Card Grid View"
-                >
-                  <LayoutGrid size={14} />
-                </button>
-                <button
-                  type="button"
-                  className={`venue-view-toggle-btn ${venueViewMode === 'table' ? 'venue-view-toggle-btn--active' : ''}`}
-                  onClick={() => setVenueViewMode('table')}
-                  title="Table View"
-                >
-                  <List size={14} />
-                </button>
-              </div>
-
-              {/* Collapse/Expand Toggle */}
-              <button
-                type="button"
-                className="btn btn--sm btn--outline"
-                style={{ padding: '3px 8px', fontSize: '0.74rem', gap: '3px' }}
-                onClick={() => setIsVenueDirectoryOpen(!isVenueDirectoryOpen)}
-                title={isVenueDirectoryOpen ? 'Collapse Directory' : 'Expand Directory'}
-              >
-                {isVenueDirectoryOpen ? (
-                  <>
-                    <span>Hide</span>
-                    <ChevronUp size={13} />
-                  </>
-                ) : (
-                  <>
-                    <span>Show</span>
-                    <ChevronDown size={13} />
+                    {/* View Switch: Grid vs Table */}
+                    <div className="venue-view-toggle">
+                      <button
+                        type="button"
+                        className={`venue-view-toggle-btn ${venueViewMode === 'grid' ? 'venue-view-toggle-btn--active' : ''}`}
+                        onClick={() => setVenueViewMode('grid')}
+                        title="Card Grid View"
+                        style={{ fontSize: '0.74rem', padding: '2px 7px' }}
+                      >
+                        Grid
+                      </button>
+                      <button
+                        type="button"
+                        className={`venue-view-toggle-btn ${venueViewMode === 'table' ? 'venue-view-toggle-btn--active' : ''}`}
+                        onClick={() => setVenueViewMode('table')}
+                        title="Table View"
+                        style={{ fontSize: '0.74rem', padding: '2px 7px' }}
+                      >
+                        List
+                      </button>
+                    </div>
                   </>
                 )}
-              </button>
+
+                {/* Collapse/Expand Toggle Button */}
+                <button
+                  type="button"
+                  className={`slot-venues-directory__toggle-btn ${isVenueDirectoryOpen ? 'slot-venues-directory__toggle-btn--open' : ''}`}
+                  onClick={() => setIsVenueDirectoryOpen(!isVenueDirectoryOpen)}
+                  title={isVenueDirectoryOpen ? 'Hide Directory' : 'Show Directory'}
+                >
+                  <span>{isVenueDirectoryOpen ? 'Hide Directory' : 'Show Directory'}</span>
+                  <span style={{ fontSize: '0.65rem' }}>{isVenueDirectoryOpen ? '▲' : '▼'}</span>
+                </button>
+              </div>
             </div>
-          </div>
 
           {isVenueDirectoryOpen && (
             <div className="slot-venues-directory__body">
@@ -1554,14 +1710,12 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                             </span>
                           </div>
                           <span className="slot-venue-card__seated">
-                            <Users size={12} />
                             <strong>{r.seated || 0}</strong> seated
                           </span>
                         </div>
 
                         <div className="slot-venue-card__staff-box">
                           <div className="slot-venue-card__staff-heading">
-                            <UserCheck size={12} style={{ color: '#059669' }} />
                             <span>Invigilator(s)</span>
                           </div>
                           <div className="slot-venue-card__staff-list">
@@ -1584,7 +1738,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                               ))
                             ) : (
                               <div className="slot-venue-card__staff-empty">
-                                <AlertCircle size={12} />
                                 <span>No invigilator assigned</span>
                               </div>
                             )}
@@ -1593,7 +1746,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
 
                         <div className="slot-venue-card__footer">
                           <span>Jump to sheet &darr;</span>
-                          <ChevronRight size={13} className="slot-venue-card__arrow" />
                         </div>
                       </a>
                     );
@@ -1642,7 +1794,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                             </td>
                             <td>
                               <span className="slot-venue-card__seated">
-                                <Users size={12} />
                                 <strong>{r.seated || 0}</strong> seated
                               </span>
                             </td>
@@ -1735,7 +1886,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               onClick={handleClearSelectedSeat}
               title="Remove student from this seat"
             >
-              <Trash2 size={13} />
               Clear Seat
             </button>
             <button
@@ -1744,7 +1894,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               style={{ borderColor: '#94a3b8', color: '#ffffff' }}
               onClick={() => setSelectedSeat(null)}
             >
-              <X size={13} />
               Cancel
             </button>
           </div>
@@ -1771,9 +1920,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                 type="button"
                 className="btn btn--primary"
                 onClick={handleExecuteTransfer}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
               >
-                <ArrowRightLeft size={15} />
                 Transfer Students
               </button>
             </>
@@ -1843,9 +1990,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               type="button"
               className="btn btn--primary"
               onClick={handleExecutePrint}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
             >
-              <Printer size={15} />
               Print Selected Sheets
             </button>
           </>
@@ -1871,17 +2016,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               transition: 'all 120ms ease',
             }}
           >
-            <div
-              style={{
-                color: printScope === 'current' ? 'var(--iiui-green)' : 'var(--itms-text-muted)',
-                background: printScope === 'current' ? '#ffffff' : '#f1f5f9',
-                padding: '0.5rem',
-                borderRadius: '6px',
-                marginTop: '2px',
-              }}
-            >
-              <Clock size={18} />
-            </div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <strong style={{ fontSize: '0.88rem', color: 'var(--iiui-navy)' }}>
@@ -1892,7 +2026,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                 )}
               </div>
               <p style={{ margin: '0.2rem 0 0', fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
-                Prints active halls for <strong>{selectedDate}</strong> ({currentSlot?.start_time || ''} &ndash; {currentSlot?.end_time || ''}).
+                Prints active halls for <strong>{selectedDate}</strong> ({formatTimeRange12(currentSlot?.start_time, currentSlot?.end_time)}).
               </p>
             </div>
           </div>
@@ -1912,17 +2046,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               transition: 'all 120ms ease',
             }}
           >
-            <div
-              style={{
-                color: printScope === 'date' ? 'var(--iiui-green)' : 'var(--itms-text-muted)',
-                background: printScope === 'date' ? '#ffffff' : '#f1f5f9',
-                padding: '0.5rem',
-                borderRadius: '6px',
-                marginTop: '2px',
-              }}
-            >
-              <Calendar size={18} />
-            </div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <strong style={{ fontSize: '0.88rem', color: 'var(--iiui-navy)' }}>
@@ -1953,17 +2076,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               transition: 'all 120ms ease',
             }}
           >
-            <div
-              style={{
-                color: printScope === 'all' ? 'var(--iiui-green)' : 'var(--itms-text-muted)',
-                background: printScope === 'all' ? '#ffffff' : '#f1f5f9',
-                padding: '0.5rem',
-                borderRadius: '6px',
-                marginTop: '2px',
-              }}
-            >
-              <Layers size={18} />
-            </div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <strong style={{ fontSize: '0.88rem', color: 'var(--iiui-navy)' }}>

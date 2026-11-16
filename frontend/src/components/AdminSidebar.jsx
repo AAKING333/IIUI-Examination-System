@@ -11,7 +11,8 @@ const NAV_ITEMS = [
   { id: 'students', label: 'Students', short: 'SE' },
   { id: 'datesheet', label: 'Datesheet', short: 'DS' },
   { id: 'seating', label: 'Seating Plan', short: 'SP' },
-  { id: 'operations', label: 'Operations', short: 'OP' },
+  { id: 'invigilators', label: 'Invigilators', short: 'IV' },
+  { id: 'umc', label: 'UMC Discipline', short: 'UM' },
   { id: 'rollslip', label: 'Roll No Slips', short: 'RS' },
 ];
 

@@ -25,7 +25,7 @@ STRICT 2-PAPER COLUMN ALTERNATION RULES:
 import itertools
 import re
 from typing import List, Dict, Any, Optional, Tuple
-from data import store
+from data import store, enrolment_type
 
 EXTRA_EMPTY_CHAIRS = 0
 _PLACEHOLDER_TEACHERS = {"unassigned", "none", "tbd", "n/a", ""}
@@ -304,6 +304,46 @@ def _pack_pair_into_rooms(
     return packed
 
 
+def _compute_active_reserve_capacity(
+    room: Dict[str, Any],
+    grid: List[List[Any]],
+    col_papers: List[Optional[str]],
+    active_sbr: Dict[str, Dict[str, Any]],
+) -> int:
+    """Buffer seats rule:
+    1. Buffer seats ONLY exist in large rooms (capacity >= 50, e.g. Room 18 and Room 26).
+       Smaller rooms (< 50) and labs strictly have 0 buffer seats.
+    2. Buffer seats are ONLY active when the room hosts a repeater course (or repeaters are seated).
+    3. The buffer seats are ALWAYS the last row of the room (number of seats = room's column count).
+    """
+    base_cap = int(room.get("capacity", 0) or 0)
+    if base_cap < 50 or room.get("room_type") == "lab":
+        return 0
+
+    cols = int(room.get("columns", 0) or 0)
+    # Check if any repeater student is seated in this room
+    for row in grid:
+        for seat in row:
+            if seat and seat.get("roll_no") and str(seat.get("roll_no")).strip().lower() != "buffer":
+                r_no = seat["roll_no"]
+                c_code = seat.get("course_code", "")
+                if enrolment_type(r_no, c_code) == "back":
+                    return cols if cols > 0 else 10
+
+    # Check if any course scheduled in this room is a repeater course
+    for p in col_papers:
+        if p and p != "—" and "Vacant" not in p:
+            clean_p = re.sub(r"-(CS|IT|T\d+)$", "", p)
+            c = store.get_course(clean_p)
+            if c:
+                if c.get("back_roll_numbers"):
+                    return cols if cols > 0 else 10
+                if any(enrolment_type(r, clean_p) == "back" for r in c.get("student_roll_numbers", [])):
+                    return cols if cols > 0 else 10
+
+    return 0
+
+
 def _search_best_combo(
     target_papers: List[Dict[str, Any]],
     total: int,
@@ -312,31 +352,45 @@ def _search_best_combo(
     extra_empty: int,
     allow_mix_teachers: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Finds the smallest-waste subset of active_rooms that satisfies packing constraints."""
+    """Finds the smallest-waste subset of active_rooms that satisfies packing constraints.
+    Prioritizes large rooms (50+ cap: Room 26 & 18) for courses with repeaters (>= 5 repeaters)."""
     if not active_rooms:
         return None
 
+    has_repeater_paper = any(
+        (p.get("back_count", 0) >= 5 or sum(1 for r in p.get("rolls", []) if enrolment_type(r, p.get("code", "")) == "back") >= 5)
+        for p in target_papers
+    )
+
+    if has_repeater_paper:
+        sorted_active_rooms = sorted(
+            active_rooms,
+            key=lambda r: (1 if r.get("capacity", 0) >= 50 else 0, r.get("capacity", 0)),
+            reverse=True,
+        )
+    else:
+        sorted_active_rooms = sorted(active_rooms, key=lambda r: r.get("capacity", 0), reverse=True)
+
     # Guard combinatorial explosion if many rooms exist
-    if len(active_rooms) > 12:
+    if len(sorted_active_rooms) > 12:
         if _pack_pair_into_rooms(
-            target_papers, active_rooms, student_by_roll,
+            target_papers, sorted_active_rooms, student_by_roll,
             extra_empty=extra_empty, allow_mix_teachers=allow_mix_teachers,
         ) is None:
             return None
-        sorted_rooms = sorted(active_rooms, key=lambda r: r["capacity"], reverse=True)
         chosen: List[Dict[str, Any]] = []
-        for r in sorted_rooms:
+        for r in sorted_active_rooms:
             chosen.append(r)
             if _pack_pair_into_rooms(
                 target_papers, chosen, student_by_roll,
                 extra_empty=extra_empty, allow_mix_teachers=allow_mix_teachers,
             ) is not None:
                 return chosen
-        return list(active_rooms)
+        return list(sorted_active_rooms)
 
     best = None
-    for n in range(1, len(active_rooms) + 1):
-        for combo in itertools.combinations(active_rooms, n):
+    for n in range(1, len(sorted_active_rooms) + 1):
+        for combo in itertools.combinations(sorted_active_rooms, n):
             combo_list = list(combo)
             if _pack_pair_into_rooms(
                 target_papers, combo_list, student_by_roll,
@@ -345,7 +399,11 @@ def _search_best_combo(
                 continue
             total_usable = sum(sum(paper_column_capacity(r, target_papers).values()) for r in combo_list)
             waste = total_usable - total
-            key = (waste, n)
+            has_big = 1 if any(r.get("capacity", 0) >= 50 for r in combo_list) else 0
+            if has_repeater_paper:
+                key = (-has_big, waste, n)
+            else:
+                key = (waste, n)
             if best is None or key < best[0]:
                 best = (key, combo_list)
         if best is not None:
@@ -410,12 +468,14 @@ def _partition_course_pairs(
     slot_courses: List[Dict[str, Any]],
     student_by_roll: Dict[str, Dict[str, Any]],
 ) -> List[List[Dict[str, Any]]]:
-    """Builds enriched paper objects and partitions them into <=2-paper pairs by demand."""
+    """Builds enriched paper objects and partitions them into <=2-paper pairs by demand.
+    Prioritizes repeater-heavy courses (>= 5 repeaters) to be paired and placed into big rooms."""
     papers = []
     for course in slot_courses:
         groups = _course_teacher_groups(course, student_by_roll)
         rolls = [r for g in groups for r in g["rolls"]]
         demand = len(rolls)
+        back_count = sum(1 for r in rolls if enrolment_type(r, course["code"]) == "back")
         papers.append({
             "code": course["code"],
             "title": course["title"],
@@ -423,8 +483,18 @@ def _partition_course_pairs(
             "rolls": rolls,
             "groups": groups,
             "demand": demand,
+            "back_count": back_count,
         })
-    sorted_papers = sorted(papers, key=lambda p: (p["demand"], len(p["rolls"])), reverse=True)
+    # Courses with >= 5 repeaters are sorted first so they get first pick of large rooms
+    sorted_papers = sorted(
+        papers,
+        key=lambda p: (
+            1 if p.get("back_count", 0) >= 5 else 0,
+            p["demand"],
+            len(p["rolls"]),
+        ),
+        reverse=True,
+    )
     return [sorted_papers[i:i + 2] for i in range(0, len(sorted_papers), 2)]
 
 
@@ -508,12 +578,18 @@ def build_seating_sheet(
         for r in range(room_out["rows"]):
             cell = room_out["grid"][r][c]
             if cell:
-                paper = cell["course_code"]
-                raw_rolls.append(cell["roll_no"])
+                if cell.get("is_buffer") or str(cell.get("roll_no")).strip().lower() == "buffer":
+                    raw_rolls.append("Buffer")
+                else:
+                    paper = cell["course_code"]
+                    raw_rolls.append(cell["roll_no"])
+            elif room_out.get("has_buffer_row") and r == room_out["rows"] - 1:
+                raw_rolls.append("Buffer")
             else:
                 raw_rolls.append("")
 
-        is_vacant = not paper or paper == "—" or "Vacant" in paper or not any(raw_rolls)
+        has_rolls = any(r and str(r).strip() for r in raw_rolls)
+        is_vacant = not paper or paper == "—" or "Vacant" in paper or not has_rolls
         # Keep full room row height for active/buffer columns so empty chairs appear cleanly
         roll_nos = [] if is_vacant else raw_rolls
 
@@ -682,7 +758,7 @@ def _build_lab_seating_plan(
                 continue
 
             r_usable = rows * cols  # In a lab, all seats are valid computers
-            reserve_cap = room.get("reserve_capacity", 0) or 0
+            reserve_cap = 0
             util = (seated_in_room / r_usable * 100) if r_usable else 0
             room_out = {
                 "room_id": room["id"],
@@ -777,17 +853,45 @@ def _build_hall_seating_plan(
                     "rolls": list(p["student_roll_numbers"]),
                 })
 
+        slot_has_repeaters = any(
+            bool(c.get("back_roll_numbers"))
+            or any(enrolment_type(r, c["code"]) == "back" for r in c.get("student_roll_numbers", []))
+            for c in slot_courses
+        )
+
+        def _room_student_rows(rm: Dict[str, Any]) -> int:
+            is_lg = (rm.get("capacity", 0) >= 50 and rm.get("room_type") != "lab")
+            if is_lg and slot_has_repeaters:
+                return max(1, rm["rows"] - 1)
+            return rm["rows"]
+
         if len(slot_groups) > 1:
-            even_cap = sum(r["rows"] * ((r["columns"] + 1) // 2) for r in chosen)
-            odd_cap = sum(r["rows"] * (r["columns"] // 2) for r in chosen)
+            even_cap = sum(_room_student_rows(r) * ((r["columns"] + 1) // 2) for r in chosen)
+            odd_cap = sum(_room_student_rows(r) * (r["columns"] // 2) for r in chosen)
             s0, s1 = _partition_stream_strictly(slot_groups, even_cap, odd_cap)
             s0_queue = [(g["code"], g["instructor"], r) for g in s0 for r in g["rolls"]]
             s1_queue = [(g["code"], g["instructor"], r) for g in s1 for r in g["rolls"]]
+
+            while (len(s0_queue) > even_cap or len(s1_queue) > odd_cap) and len(chosen) < len(all_rooms):
+                for r in all_rooms:
+                    if r not in chosen:
+                        chosen.append(r)
+                        even_cap += _room_student_rows(r) * ((r["columns"] + 1) // 2)
+                        odd_cap += _room_student_rows(r) * (r["columns"] // 2)
+                        break
+                s0, s1 = _partition_stream_strictly(slot_groups, even_cap, odd_cap)
+                s0_queue = [(g["code"], g["instructor"], r) for g in s0 for r in g["rolls"]]
+                s1_queue = [(g["code"], g["instructor"], r) for g in s1 for r in g["rolls"]]
+
             s0_idx = 0
             s1_idx = 0
             rooms_out = []
             for room in chosen:
                 rows, cols = room["rows"], room["columns"]
+                is_lg = (room.get("capacity", 0) >= 50 and room.get("room_type") != "lab")
+                use_buffer_row = is_lg and slot_has_repeaters
+                student_rows = (rows - 1) if use_buffer_row else rows
+
                 grid = [[None] * cols for _ in range(rows)]
                 col_paper = [None] * cols
                 col_teacher = [None] * cols
@@ -798,7 +902,7 @@ def _build_hall_seating_plan(
                             cd, tc, _ = s0_queue[s0_idx]
                             col_paper[c] = cd
                             col_teacher[c] = tc
-                            for r in range(rows):
+                            for r in range(student_rows):
                                 if s0_idx < len(s0_queue):
                                     c_code, teacher, roll = s0_queue[s0_idx]
                                     grid[r][c] = {
@@ -815,7 +919,7 @@ def _build_hall_seating_plan(
                             cd, tc, _ = s1_queue[s1_idx]
                             col_paper[c] = cd
                             col_teacher[c] = tc
-                            for r in range(rows):
+                            for r in range(student_rows):
                                 if s1_idx < len(s1_queue):
                                     c_code, teacher, roll = s1_queue[s1_idx]
                                     grid[r][c] = {
@@ -829,8 +933,20 @@ def _build_hall_seating_plan(
                                     seated += 1
                 if seated <= 0:
                     continue
-                util = (seated / room["capacity"] * 100)
-                reserve_cap = room.get("reserve_capacity", 0) or 0
+
+                if use_buffer_row:
+                    for c in range(cols):
+                        grid[rows - 1][c] = {
+                            "roll_no": "Buffer",
+                            "name": "Buffer Seat",
+                            "course_code": col_paper[c] or "",
+                            "instructor": col_teacher[c] or "",
+                            "seat": f"Row {rows}, Col {c + 1} (Buffer)",
+                            "is_buffer": True,
+                        }
+
+                reserve_cap = cols if use_buffer_row else 0
+                util = (seated / (student_rows * cols) * 100) if (student_rows and cols) else 0
                 room_out = {
                     "room_id": room["id"],
                     "room_name": room["name"],
@@ -838,8 +954,8 @@ def _build_hall_seating_plan(
                     "columns": cols,
                     "capacity": room["capacity"],
                     "reserve_capacity": reserve_cap,
-                    "usable_capacity": room["capacity"],
-                    "total_usable_seats": room["capacity"] + reserve_cap,
+                    "usable_capacity": student_rows * cols,
+                    "total_usable_seats": room["capacity"],
                     "seated": seated,
                     "utilisation_pct": round(util, 1),
                     "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),
@@ -848,6 +964,8 @@ def _build_hall_seating_plan(
                     "column_teachers": col_teacher,
                     "adjacent_rule_pass": check_adjacent_columns(grid, rows, cols),
                     "single_paper": False,
+                    "has_buffer_row": use_buffer_row,
+                    "buffer_row_index": (rows - 1) if use_buffer_row else None,
                 }
                 room_out["seating_sheet"] = build_seating_sheet(room_out, course_instructor_map, student_by_roll=active_sbr)
                 rooms_out.append(room_out)
@@ -909,8 +1027,20 @@ def _build_hall_seating_plan(
                         "instructor": p.get("instructor", ""),
                         "rolls": list(p["rolls"]),
                     })
-            even_cap = sum(r["rows"] * ((r["columns"] + 1) // 2) for r in rooms_to_use)
-            odd_cap = sum(r["rows"] * (r["columns"] // 2) for r in rooms_to_use)
+            pair_has_repeaters = any(
+                bool(p.get("back_roll_numbers"))
+                or any(enrolment_type(r, p["code"]) == "back" for r in p.get("student_roll_numbers", []))
+                for p in pair
+            )
+
+            def _room_pair_usable_rows(rm: Dict[str, Any]) -> int:
+                is_lg = (rm.get("capacity", 0) >= 50 and rm.get("room_type") != "lab")
+                if is_lg and pair_has_repeaters:
+                    return max(1, rm["rows"] - 1)
+                return rm["rows"]
+
+            even_cap = sum(_room_pair_usable_rows(r) * ((r["columns"] + 1) // 2) for r in rooms_to_use)
+            odd_cap = sum(_room_pair_usable_rows(r) * (r["columns"] // 2) for r in rooms_to_use)
             s0, s1 = _partition_stream_strictly(pair_groups, even_cap, odd_cap)
             s0_queue = [(g["code"], g["instructor"], r) for g in s0 for r in g["rolls"]]
             s1_queue = [(g["code"], g["instructor"], r) for g in s1 for r in g["rolls"]]
@@ -918,6 +1048,10 @@ def _build_hall_seating_plan(
             s1_idx = 0
             for room in rooms_to_use:
                 rows, cols = room["rows"], room["columns"]
+                is_lg = (room.get("capacity", 0) >= 50 and room.get("room_type") != "lab")
+                use_buffer_row = is_lg and pair_has_repeaters
+                student_rows = (rows - 1) if use_buffer_row else rows
+
                 grid = [[None] * cols for _ in range(rows)]
                 col_paper = [None] * cols
                 col_teacher = [None] * cols
@@ -928,7 +1062,7 @@ def _build_hall_seating_plan(
                             cd, tc, _ = s0_queue[s0_idx]
                             col_paper[c] = cd
                             col_teacher[c] = tc
-                            for r in range(rows):
+                            for r in range(student_rows):
                                 if s0_idx < len(s0_queue):
                                     c_code, teacher, roll = s0_queue[s0_idx]
                                     grid[r][c] = {
@@ -945,7 +1079,7 @@ def _build_hall_seating_plan(
                             cd, tc, _ = s1_queue[s1_idx]
                             col_paper[c] = cd
                             col_teacher[c] = tc
-                            for r in range(rows):
+                            for r in range(student_rows):
                                 if s1_idx < len(s1_queue):
                                     c_code, teacher, roll = s1_queue[s1_idx]
                                     grid[r][c] = {
@@ -959,8 +1093,20 @@ def _build_hall_seating_plan(
                                     seated += 1
                 if seated <= 0:
                     continue
-                util = (seated / room["capacity"] * 100)
-                reserve_cap = room.get("reserve_capacity", 0) or 0
+
+                if use_buffer_row:
+                    for c in range(cols):
+                        grid[rows - 1][c] = {
+                            "roll_no": "Buffer",
+                            "name": "Buffer Seat",
+                            "course_code": col_paper[c] or "",
+                            "instructor": col_teacher[c] or "",
+                            "seat": f"Row {rows}, Col {c + 1} (Buffer)",
+                            "is_buffer": True,
+                        }
+
+                reserve_cap = cols if use_buffer_row else 0
+                util = (seated / (student_rows * cols) * 100) if (student_rows and cols) else 0
                 room_out = {
                     "room_id": room["id"],
                     "room_name": room["name"],
@@ -968,8 +1114,8 @@ def _build_hall_seating_plan(
                     "columns": cols,
                     "capacity": room["capacity"],
                     "reserve_capacity": reserve_cap,
-                    "usable_capacity": room["capacity"],
-                    "total_usable_seats": room["capacity"] + reserve_cap,
+                    "usable_capacity": student_rows * cols,
+                    "total_usable_seats": room["capacity"],
                     "seated": seated,
                     "utilisation_pct": round(util, 1),
                     "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),
@@ -978,6 +1124,8 @@ def _build_hall_seating_plan(
                     "column_teachers": col_teacher,
                     "adjacent_rule_pass": check_adjacent_columns(grid, rows, cols),
                     "single_paper": False,
+                    "has_buffer_row": use_buffer_row,
+                    "buffer_row_index": (rows - 1) if use_buffer_row else None,
                 }
                 room_out["seating_sheet"] = build_seating_sheet(room_out, course_instructor_map, student_by_roll=active_sbr)
                 rooms_out.append(room_out)
@@ -1022,7 +1170,18 @@ def _build_hall_seating_plan(
             if seated <= 0:
                 continue
             util = (seated / r_usable * 100) if r_usable else 0
-            reserve_cap = room.get("reserve_capacity", 0) or 0
+            reserve_cap = _compute_active_reserve_capacity(room, grid, col_paper, active_sbr)
+            use_buffer_row = reserve_cap > 0
+            if use_buffer_row:
+                for c in range(cols):
+                    grid[rows - 1][c] = {
+                        "roll_no": "Buffer",
+                        "name": "Buffer Seat",
+                        "course_code": col_paper[c] or "",
+                        "instructor": col_teacher[c] or "",
+                        "seat": f"Row {rows}, Col {c + 1} (Buffer)",
+                        "is_buffer": True,
+                    }
             room_out = {
                 "room_id": room["id"],
                 "room_name": room["name"],
@@ -1031,7 +1190,7 @@ def _build_hall_seating_plan(
                 "capacity": room["capacity"],
                 "reserve_capacity": reserve_cap,
                 "usable_capacity": r_usable,
-                "total_usable_seats": r_usable + reserve_cap,
+                "total_usable_seats": room["capacity"],
                 "seated": seated,
                 "utilisation_pct": round(util, 1),
                 "utilisation_flag": "LOW" if util < 70 else ("OK" if util >= 85 else "FAIR"),
@@ -1040,6 +1199,8 @@ def _build_hall_seating_plan(
                 "column_teachers": col_teacher,
                 "adjacent_rule_pass": check_adjacent_columns(grid, rows, cols),
                 "single_paper": len(pair) < 2,
+                "has_buffer_row": use_buffer_row,
+                "buffer_row_index": (rows - 1) if use_buffer_row else None,
             }
             room_out["seating_sheet"] = build_seating_sheet(room_out, course_instructor_map, student_by_roll=active_sbr)
             rooms_out.append(room_out)

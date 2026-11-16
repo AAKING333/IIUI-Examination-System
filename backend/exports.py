@@ -81,6 +81,38 @@ def _fmt_date(date_str):
         return date_str
 
 
+def _format_time_12(t_str):
+    """Converts '08:45' or '14:30' into 12-hour format '08:45 AM' or '02:30 PM'."""
+    if not t_str:
+        return ""
+    raw = str(t_str).strip()
+    if "am" in raw.lower() or "pm" in raw.lower():
+        return raw
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            dt = datetime.datetime.strptime(raw, fmt)
+            return dt.strftime("%I:%M %p")
+        except ValueError:
+            pass
+    return raw
+
+
+def _format_time_range_12(start_str, end_str=None, sep=" - "):
+    """Formats start and end time into 12-hour AM/PM range (e.g. '08:45 AM - 10:15 AM')."""
+    if end_str is None:
+        raw = str(start_str).strip()
+        for delimiter in (" \u2013 ", " - ", "-", "\u2013"):
+            if delimiter in raw:
+                parts = raw.split(delimiter, 1)
+                return f"{_format_time_12(parts[0])}{sep}{_format_time_12(parts[1])}"
+        return _format_time_12(raw)
+    s = _format_time_12(start_str)
+    e = _format_time_12(end_str)
+    if s and e:
+        return f"{s}{sep}{e}"
+    return s or e or ""
+
+
 def _clean_instructor(instructor_str):
     if not instructor_str:
         return "—"
@@ -275,7 +307,7 @@ def datesheet_xlsx(datesheet_entries, seating_by_slot, version="1.2"):
         c.border = CELL_BORDER
 
     # Set column widths matching reference
-    widths = [20, 42, 38, 24, 22, 16, 26]
+    widths = [24, 42, 38, 24, 22, 16, 26]
     for j, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(j)].width = w
 
@@ -308,7 +340,7 @@ def datesheet_xlsx(datesheet_entries, seating_by_slot, version="1.2"):
             slots_in_day.setdefault(key, []).append(e)
 
         for (slot_id, start_time, end_time), slot_entries in slots_in_day.items():
-            time_str = f"{start_time} - {end_time}"
+            time_str = _format_time_range_12(start_time, end_time)
             total_students_session = sum(e.get("students", 0) for e in slot_entries)
 
             # Group courses in this session by unique course_code
@@ -447,7 +479,7 @@ def datesheet_pdf(datesheet_entries, seating_by_slot, version="1.2"):
     headings_style = FontFace(emphasis="BOLD", color=255, fill_color=(11, 59, 44))
     banner_style = FontFace(emphasis="BOLD", color=(11, 59, 44), fill_color=(235, 243, 238))
 
-    col_widths = (28, 62, 65, 38, 38, 20, 26)
+    col_widths = (32, 60, 63, 38, 38, 20, 26)
     headers = [
         "Date  (Day)",
         "Course",
@@ -478,7 +510,7 @@ def datesheet_pdf(datesheet_entries, seating_by_slot, version="1.2"):
                 slots_in_day.setdefault(key, []).append(e)
 
             for (slot_id, start_time, end_time), slot_entries in slots_in_day.items():
-                time_str = f"{start_time} - {end_time}"
+                time_str = _clean_pdf_text(_format_time_range_12(start_time, end_time))
                 total_students_session = sum(e.get("students", 0) for e in slot_entries)
 
                 course_map = {}
@@ -550,7 +582,7 @@ def seating_xlsx(plan):
                 "DEPARTMENT OF COMPUTER SCIENCE & INFORMATION TECHNOLOGY",
                 "SEATING ARRANGEMENT",
                 f"Date: {_fmt_date(plan['date'])}",
-                f"Time Slot: {plan['start_time']} - {plan['end_time']}",
+                f"Time Slot: {_format_time_range_12(plan.get('start_time', ''), plan.get('end_time', ''))}",
                 f"Room No.: {room['room_name']}"], start=1):
             ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=ncols)
             c = ws.cell(row=i, column=1, value=text)
@@ -579,9 +611,14 @@ def seating_xlsx(plan):
             for j, col in enumerate(sheet["columns"], start=1):
                 v = col["roll_nos"][r] if r < len(col["roll_nos"]) else ""
                 c = ws.cell(row=9 + r, column=j, value=v)
-                c.font = DATA_FONT
                 c.alignment = CENTER_ALIGN
                 c.border = CELL_BORDER
+                if str(v).strip().lower() == "buffer":
+                    c.value = "Buffer"
+                    c.font = Font(name="Times New Roman", bold=True, size=10, color="92400E")
+                    c.fill = PatternFill("solid", fgColor="FEF3C7")
+                else:
+                    c.font = DATA_FONT
         for j in range(1, ncols + 1):
             ws.column_dimensions[get_column_letter(j)].width = 20
     buf = io.BytesIO()
@@ -637,7 +674,7 @@ def _slip_pdf(pdf, slip):
             new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
     # Table: sample columns first, then Date/Time/Room/Seat, then Remarks.
-    widths = [12, 24, 52, 20, 24, 18, 20, 20]  # total 190 (A4 usable width)
+    widths = [10, 22, 46, 22, 38, 16, 18, 18]  # total 190 (A4 usable width)
     headers = ["S.No", "Course Code", "Course Title", "Date", "Time", "Room", "Seat", "Remarks"]
     pdf.set_font("Helvetica", "B", 9)
     for w, h in zip(widths, headers):
@@ -646,13 +683,14 @@ def _slip_pdf(pdf, slip):
     pdf.set_font("Helvetica", "", 9)
     for i, p in enumerate(slip["papers"], start=1):
         title = p["course_title"]
-        if len(title) > 32:
-            title = title[:29] + "..."
+        if len(title) > 30:
+            title = title[:27] + "..."
+        formatted_time = _clean_pdf_text(_format_time_range_12(p.get("start_time", ""), p.get("end_time", "")))
         vals = [str(i), p["course_code"], title, p["date"],
-                f"{p['start_time']}-{p['end_time']}", p.get("room", "—"),
+                formatted_time, p.get("room", "—"),
                 p.get("seat", "—"), p.get("remarks", p.get("type", "")).title()]
         for w, v in zip(widths, vals):
-            pdf.cell(w, 8, str(v), border=1, align="C" if w != 52 else "L")
+            pdf.cell(w, 8, str(v), border=1, align="C" if w != 46 else "L")
         pdf.ln()
     pdf.ln(4)
     pdf.set_font("Helvetica", "B", 11)
@@ -663,7 +701,7 @@ def _slip_pdf(pdf, slip):
         pdf.multi_cell(pdf.epw, 6, note)
     pdf.ln(4)
     pdf.set_font("Helvetica", "I", 10)
-    generated = datetime.datetime.now().strftime("%b-%d-%Y %H:%M:%S")
+    generated = datetime.datetime.now().strftime("%b-%d-%Y %I:%M:%S %p")
     pdf.cell(0, 6, f"Al-Jamia (IT-Center) Auto Generated on {generated}",
             new_x="LMARGIN", new_y="NEXT")
 
@@ -699,13 +737,20 @@ def umc_report_pdf(report):
              align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
+    reported_val = str(report.get("created_at", ""))
+    try:
+        dt = datetime.datetime.fromisoformat(reported_val.replace("Z", "+00:00"))
+        reported_val = dt.strftime("%b %d, %Y %I:%M %p")
+    except Exception:
+        pass
+
     fields = [
         ("Student Roll No.", report["roll_no"]),
         ("Course", report["course_code"]),
         ("Slot ID", report["slot_id"]),
         ("Room ID", report["room_id"]),
         ("Reporting Invigilator", report["invigilator"]),
-        ("Reported", report["created_at"]),
+        ("Reported", reported_val),
     ]
     for label, value in fields:
         pdf.set_font("Helvetica", "B", 10)
@@ -737,6 +782,6 @@ def umc_report_pdf(report):
     pdf.set_font("Helvetica", "I", 9)
     pdf.cell(0, 6, "Digital signature captured with the incident report.",
              new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    pdf.cell(0, 6, f"Generated {datetime.datetime.now().strftime('%b-%d-%Y %I:%M:%S %p')}",
              new_x="LMARGIN", new_y="NEXT")
     return io.BytesIO(pdf.output())

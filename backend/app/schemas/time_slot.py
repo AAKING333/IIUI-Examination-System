@@ -1,5 +1,5 @@
 """Pydantic schemas for Time Slots."""
-from typing import List
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 
 
@@ -19,7 +19,21 @@ class AutoGenerateSlotsIn(BaseModel):
     duration_minutes: int = Field(90, ge=15, le=360, json_schema_extra={"example": 90})
     break_minutes: int = Field(15, ge=0, le=180, json_schema_extra={"example": 15})
     skip_weekends: bool = Field(True, json_schema_extra={"example": True})
-    replace_existing: bool = Field(False, json_schema_extra={"example": False})
+    replace_existing: bool = False
+
+
+class PresetSessionIn(BaseModel):
+    start_time: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    end_time: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    label: str = Field("", max_length=80)
+    slot_type: str = Field("written", pattern="^(written|lab)$")
+
+
+class PresetTemplateIn(BaseModel):
+    name: str = Field(..., max_length=120)
+    days: int = Field(..., ge=1, le=60)
+    sessions: List[PresetSessionIn]
+    friday_sessions: Optional[List[PresetSessionIn]] = None
 
 
 class SlotPresetIn(BaseModel):
@@ -27,6 +41,8 @@ class SlotPresetIn(BaseModel):
     from_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     study_holidays: List[str] = Field(default_factory=list)
     replace_existing: bool = False
+    requested_days: Optional[int] = None
+    custom_sessions: Optional[List[PresetSessionIn]] = None
 
 
 class BulkDeleteSlotsIn(BaseModel):
@@ -36,3 +52,4 @@ class BulkDeleteSlotsIn(BaseModel):
 class BulkShiftSlotsIn(BaseModel):
     slot_ids: List[str]
     shift_days: int
+

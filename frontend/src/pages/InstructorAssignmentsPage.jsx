@@ -1,5 +1,4 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 
 const PRESET_PROGRAMS = ['BSCS', 'BSIT', 'BSSE'];
@@ -169,8 +168,7 @@ export default function InstructorAssignmentsPage({
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
-            <Plus size={16} />
-            Assign Instructor
+            + Assign Instructor
           </button>
         </div>
       </div>
@@ -322,7 +320,7 @@ export default function InstructorAssignmentsPage({
                       className="btn btn--sm btn--danger"
                       onClick={() => setDeleteConfirm(a)}
                     >
-                      <Trash2 size={13} />
+                      Delete
                     </button>
                   </div>
                 </td>
@@ -460,7 +458,6 @@ export default function InstructorAssignmentsPage({
               onClick={() => handleDelete(deleteConfirm.id)}
               disabled={isSubmitting}
             >
-              <Trash2 size={14} />
               {isSubmitting ? 'Deleting...' : 'Delete Assignment'}
             </button>
           </div>

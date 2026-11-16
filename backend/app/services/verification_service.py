@@ -1,4 +1,5 @@
 """Student exam allocation verification and roll number slips service."""
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -23,13 +24,41 @@ def compile_student_exam_allocations() -> List[dict]:
         if not plan:
             continue
         for room in plan.get("rooms", []):
+            r_name = room.get("room_name") or room.get("name") or str(room.get("room_id"))
+            # 1. Map all cells in the 2D grid
             for r, row in enumerate(room.get("grid", [])):
                 for c, cell in enumerate(row):
-                    if cell:
-                        seat_of[(cell["roll_no"], cell["course_code"])] = {
-                            "room": room["room_name"],
-                            "seat": cell["seat"],
+                    if cell and cell.get("roll_no"):
+                        roll = str(cell["roll_no"]).strip()
+                        raw_c = str(cell.get("course_code") or "").strip()
+                        clean_c = re.sub(r"-T\d+$", "", raw_c)
+                        clean_c_noprog = re.sub(r"-(CS|IT|SE)$", "", clean_c)
+                        seat_info = {
+                            "room": r_name,
+                            "seat": cell.get("seat") or f"Row {r + 1}, Col {c + 1}",
                         }
+                        seat_of[(roll, raw_c)] = seat_info
+                        seat_of[(roll, clean_c)] = seat_info
+                        seat_of[(roll, clean_c_noprog)] = seat_info
+
+            # 2. Map all column entries from seating sheet (handles manual edits / saved layouts)
+            sheet = room.get("seating_sheet")
+            if sheet and sheet.get("columns"):
+                for col_idx, col in enumerate(sheet["columns"]):
+                    col_num = col.get("col_num", col_idx + 1)
+                    raw_c = str(col.get("course_code") or col.get("paper") or "").strip()
+                    clean_c = re.sub(r"-T\d+$", "", raw_c)
+                    clean_c_noprog = re.sub(r"-(CS|IT|SE)$", "", clean_c)
+                    for r_idx, roll in enumerate(col.get("roll_nos", [])):
+                        if roll and str(roll).strip():
+                            r_clean = str(roll).strip()
+                            s_info = {
+                                "room": r_name,
+                                "seat": f"Row {r_idx + 1}, Col {col_num}",
+                            }
+                            seat_of.setdefault((r_clean, raw_c), s_info)
+                            seat_of.setdefault((r_clean, clean_c), s_info)
+                            seat_of.setdefault((r_clean, clean_c_noprog), s_info)
 
     records = []
     for student in store.get_students():
@@ -45,7 +74,14 @@ def compile_student_exam_allocations() -> List[dict]:
             if c_info and in_scheduled_group and student["roll_no"] in c_info.get("student_roll_numbers", []):
                 if store.get_attendance_percent(student["roll_no"], code) < 75:
                     continue
-                seat = seat_of.get((student["roll_no"], code), {})
+                clean_code = re.sub(r"-T\d+$", "", code)
+                clean_code_noprog = re.sub(r"-(CS|IT|SE)$", "", clean_code)
+                seat = (
+                    seat_of.get((student["roll_no"], code))
+                    or seat_of.get((student["roll_no"], clean_code))
+                    or seat_of.get((student["roll_no"], clean_code_noprog))
+                    or {}
+                )
                 typ = enrolment_type(student["roll_no"], code)
                 papers.append({
                     "course_code": code,
@@ -53,8 +89,8 @@ def compile_student_exam_allocations() -> List[dict]:
                     "date": entry["date"],
                     "start_time": entry["start_time"],
                     "end_time": entry["end_time"],
-                    "room": seat.get("room", "Allocated"),
-                    "seat": seat.get("seat", "Assigned"),
+                    "room": seat.get("room") or "—",
+                    "seat": seat.get("seat") or "—",
                     "type": typ,
                     "remarks": "Back Paper" if typ == "back" else "Regular",
                 })

@@ -177,6 +177,11 @@ class SQLiteDatabase:
             # split-lab case.
             connection.execute("DROP INDEX IF EXISTS idx_invigilation_slot_instructor")
 
+            # Buffer seats rule: buffer seats only in large rooms (capacity >= 50, e.g. Room 18 and Room 26).
+            # Smaller rooms (< 50) and labs must have 0 reserve capacity.
+            connection.execute("UPDATE rooms SET reserve_capacity = 0 WHERE capacity < 50 OR room_type = 'lab'")
+            connection.execute("UPDATE rooms SET reserve_capacity = 10 WHERE capacity >= 50 AND room_type != 'lab'")
+
     def load_master_data(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         with self.connect() as connection:
             if connection.execute("SELECT COUNT(*) FROM rooms").fetchone()[0] == 0:

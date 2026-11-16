@@ -67,7 +67,7 @@ export default function Dashboard({
         </div>
         <p className="itms-dash__panelText">
           Automated timetable and room allocation algorithms adhere to the{' '}
-          <strong>IIUI Back-Paper Examination Rule (v2)</strong>:
+          <strong>IIUI Repeater Examination Rule (v2)</strong>:
         </p>
         <ul style={{ fontSize: '0.86rem', color: 'var(--itms-text-secondary)', lineHeight: '1.7', margin: '0.6rem 0 1rem 1.25rem' }}>
           <li>
@@ -77,7 +77,7 @@ export default function Dashboard({
             <strong>Regular Paper Quota:</strong> At most 1 REGULAR paper per student per calendar day.
           </li>
           <li>
-            <strong>Daily Limit:</strong> At most 2 papers total per day (1 regular + 1 repeat/back paper in different sessions).
+            <strong>Daily Limit:</strong> At most 2 papers total per day (1 regular + 1 repeater paper in different sessions).
           </li>
           <li>
             <strong>Room Seating Alternation:</strong> Adjacent columns in an examination hall never host the same paper (column rotation enforcement).
@@ -128,7 +128,7 @@ export default function Dashboard({
               <span style={{ color: 'var(--iiui-green)', fontWeight: 700 }}>&rarr;</span>
             </div>
             <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--itms-text-muted)' }}>
-              Manage student cohorts, enroll in courses, and designate regular or back papers.
+              Manage student cohorts, enroll in courses, and designate regular or repeater papers.
             </p>
           </div>
 

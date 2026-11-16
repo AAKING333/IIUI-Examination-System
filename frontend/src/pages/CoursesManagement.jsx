@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 
 export default function CoursesManagement({ courses = [], onRefresh, showBanner }) {
@@ -115,8 +114,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
-            <Plus size={16} />
-            Add New Course
+            + Add New Course
           </button>
         </div>
       </div>
@@ -138,7 +136,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
 
         <article className="itms-dash__statCard">
           <div className="itms-dash__statBody">
-            <span className="itms-dash__statLabel">Back-Paper Registrations</span>
+            <span className="itms-dash__statLabel">Repeater Registrations</span>
             <span className="itms-dash__statValue">{totalBack}</span>
           </div>
         </article>
@@ -182,7 +180,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
                     </span>
                     {c.back_students > 0 && (
                       <span className="badge badge--warning" style={{ fontSize: '0.74rem' }}>
-                        {c.back_students} Back
+                        {c.back_students} Repeater
                       </span>
                     )}
                   </div>
@@ -201,7 +199,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
                       className="btn btn--sm btn--danger"
                       onClick={() => setDeleteConfirm(c.code)}
                     >
-                      <Trash2 size={13} />
+                      Delete
                     </button>
                   </div>
                 </td>
@@ -318,7 +316,6 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
               onClick={() => handleDelete(deleteConfirm)}
               disabled={isSubmitting}
             >
-              <Trash2 size={14} />
               {isSubmitting ? 'Deleting...' : 'Delete Course'}
             </button>
           </div>

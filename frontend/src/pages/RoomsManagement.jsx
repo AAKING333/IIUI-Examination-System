@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal.jsx';
 
 const defaultForm = (room_type = 'hall') => ({
@@ -8,7 +7,7 @@ const defaultForm = (room_type = 'hall') => ({
   rows: 5,
   columns: 8,
   capacity: 40,
-  reserve_capacity: room_type === 'lab' ? 0 : 5,
+  reserve_capacity: 0,
   invigilators_required: 1,
   room_type,
 });
@@ -52,11 +51,13 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
   const handleDimensionsChange = (rows, cols) => {
     const r = parseInt(rows, 10) || 0;
     const c = parseInt(cols, 10) || 0;
+    const calc = r * c;
     setFormData((prev) => ({
       ...prev,
       rows: r,
       columns: c,
-      capacity: r * c,
+      capacity: calc,
+      reserve_capacity: prev.room_type === 'lab' || calc < 50 ? 0 : (prev.reserve_capacity || 10),
     }));
   };
 
@@ -136,8 +137,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
-            <Plus size={16} />
-            Add New Room
+            + Add New Room
           </button>
         </div>
       </div>
@@ -235,7 +235,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                         title="Delete room"
                         disabled={rooms.length <= 1}
                       >
-                        <Trash2 size={13} /> Delete
+                        Delete
                       </button>
                     </div>
                   </td>
@@ -317,7 +317,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                   setFormData((prev) => ({
                     ...prev,
                     room_type,
-                    reserve_capacity: room_type === 'lab' ? 0 : (prev.reserve_capacity || 5),
+                    reserve_capacity: room_type === 'lab' || (prev.capacity || 0) < 50 ? 0 : (prev.reserve_capacity || 10),
                   }));
                 }}
               >
@@ -392,7 +392,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                 disabled={formData.room_type === 'lab'}
               />
               <span className="form-hint">
-                Labs use 0 reserve. Halls typically use +5 or +10.
+                Buffer seats reserved only for large halls (50+ capacity, e.g. Room 18 &amp; 26) hosting repeater courses.
               </span>
             </div>
           </div>

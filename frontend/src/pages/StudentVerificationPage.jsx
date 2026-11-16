@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatTimeRange12 } from '../utils/timeFormat.js';
 
 export default function StudentVerificationPage({ showBanner }) {
   const [searchTerm, setSearchTerm] = useState('');
@@ -117,7 +118,7 @@ export default function StudentVerificationPage({ showBanner }) {
                       {student.name}
                     </strong>
                     {student.papers.some((p) => p.type === 'back') && (
-                      <span className="badge badge--warning">Contains Back Paper</span>
+                      <span className="badge badge--warning">Contains Repeater Paper</span>
                     )}
                   </div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)', marginTop: '0.25rem' }}>
@@ -156,7 +157,7 @@ export default function StudentVerificationPage({ showBanner }) {
                         {p.date}
                       </td>
                       <td>
-                        {p.start_time} &ndash; {p.end_time}
+                        <span style={{ fontWeight: 600 }}>{formatTimeRange12(p.start_time, p.end_time)}</span>
                       </td>
                       <td>
                         <strong>{p.room}</strong>

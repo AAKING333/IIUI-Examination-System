@@ -14,7 +14,8 @@ import DatesheetPage from './pages/DatesheetPage.jsx';
 import SeatingPlanPage from './pages/SeatingPlanPage.jsx';
 import RollSlipPage from './pages/RollSlipPage.jsx';
 import StudentVerificationPage from './pages/StudentVerificationPage.jsx';
-import ExamOperationsPage from './pages/ExamOperationsPage.jsx';
+import InvigilatorsPage from './pages/InvigilatorsPage.jsx';
+import UMCPage from './pages/UMCPage.jsx';
 import './styles/tokens.css';
 import './styles/dashboard.css';
 import './styles/admin.css';
@@ -309,8 +310,18 @@ export default function App() {
             />
           )}
 
-          {(currentView === 'operations' || currentView === 'reports') && (
-            <ExamOperationsPage
+          {(currentView === 'invigilators' || currentView === 'invigilation' || currentView === 'operations' || currentView === 'reports') && (
+            <InvigilatorsPage
+              slots={slots}
+              rooms={rooms}
+              students={students}
+              datesheet={datesheet}
+              showBanner={showBanner}
+            />
+          )}
+
+          {currentView === 'umc' && (
+            <UMCPage
               slots={slots}
               rooms={rooms}
               students={students}

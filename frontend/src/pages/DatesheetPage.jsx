@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { formatTimeRange12 } from '../utils/timeFormat.js';
 
 export default function DatesheetPage({
   datesheet = { datesheet: [], unplaced: [] },
@@ -171,7 +172,7 @@ export default function DatesheetPage({
             slot_id: e.slot_id || '',
             start_time: e.start_time || '',
             end_time: e.end_time || '',
-            time_str: `${e.start_time || ''} - ${e.end_time || ''}`,
+            time_str: formatTimeRange12(e.start_time, e.end_time),
             entries: [],
           });
         }
@@ -326,7 +327,7 @@ export default function DatesheetPage({
         </div>
       </div>
 
-      {/* KPI Stats Strip (hidden during print) */}
+      {/* Version Status Banner (hidden during print) */}
       {datesheet.version && (
         <div
           className={`alert-banner ${datesheet.status === 'SUPERSEDED' ? 'alert-banner--danger' : 'alert-banner--success'} no-print`}
@@ -340,26 +341,6 @@ export default function DatesheetPage({
             ' · Roll slips and seating charts from this version are no longer valid.'}
         </div>
       )}
-      <div className="datesheet-kpi-grid no-print">
-        <div className="datesheet-kpi-card">
-          <span className="datesheet-kpi-label">TOTAL COURSES</span>
-          <span className="datesheet-kpi-val">{coursesCount || entries.length}</span>
-        </div>
-        <div className="datesheet-kpi-card">
-          <span className="datesheet-kpi-label">TOTAL STUDENTS</span>
-          <span className="datesheet-kpi-val">{studentsCount}</span>
-        </div>
-        <div className="datesheet-kpi-card">
-          <span className="datesheet-kpi-label">SCHEDULED PAPERS</span>
-          <span className="datesheet-kpi-val">{entries.length}</span>
-        </div>
-        <div className="datesheet-kpi-card">
-          <span className="datesheet-kpi-label">ACTIVE EXAM ROOMS</span>
-          <span className="datesheet-kpi-val">
-            {distinctRoomsAllocated > 0 ? distinctRoomsAllocated : roomsCount}
-          </span>
-        </div>
-      </div>
 
       {/* Unplaced Courses Warning (if any) */}
       {unplaced.length > 0 && (

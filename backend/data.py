@@ -601,12 +601,12 @@ class DataStore:
 
     def reset_to_seed(self):
         self.rooms = [
-            {"id": "R25", "name": "Room 25", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 5, "invigilators_required": 1, "room_type": "hall"},
-            {"id": "R26", "name": "Room 26", "rows": 10, "columns": 7, "capacity": 70, "department": "CS", "reserve_capacity": 5, "invigilators_required": 3, "room_type": "hall"},
-            {"id": "R27", "name": "Room 27", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 5, "invigilators_required": 1, "room_type": "hall"},
+            {"id": "R25", "name": "Room 25", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
+            {"id": "R26", "name": "Room 26", "rows": 10, "columns": 7, "capacity": 70, "department": "CS", "reserve_capacity": 10, "invigilators_required": 3, "room_type": "hall"},
+            {"id": "R27", "name": "Room 27", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
             {"id": "R18", "name": "Room 18", "rows": 10, "columns": 6, "capacity": 60, "department": "IT", "reserve_capacity": 10, "invigilators_required": 2, "room_type": "hall"},
-            {"id": "R21", "name": "Room 21", "rows": 7, "columns": 5, "capacity": 35, "department": "IT", "reserve_capacity": 5, "invigilators_required": 1, "room_type": "hall"},
-            {"id": "R28", "name": "Room 28", "rows": 7, "columns": 5, "capacity": 35, "department": "IT", "reserve_capacity": 5, "invigilators_required": 1, "room_type": "hall"},
+            {"id": "R21", "name": "Room 21", "rows": 7, "columns": 5, "capacity": 35, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
+            {"id": "R28", "name": "Room 28", "rows": 7, "columns": 5, "capacity": 35, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
             {"id": "LAB-2", "name": "Lab 2", "rows": 5, "columns": 5, "capacity": 25, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
             {"id": "LAB-3", "name": "Lab 3", "rows": 5, "columns": 5, "capacity": 25, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
             {"id": "LAB-4", "name": "Lab 4", "rows": 5, "columns": 5, "capacity": 25, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
@@ -885,7 +885,7 @@ class DataStore:
         new_num = max(existing_nums) + 1 if existing_nums else 1
         new_id = f"{prefix}{new_num}"
 
-        res_cap = reserve_capacity if reserve_capacity is not None else (0 if is_lab else 5)
+        res_cap = reserve_capacity if reserve_capacity is not None else (10 if (not is_lab and (calc_cap or 0) >= 50) else 0)
         dept = department.strip() if department else ("CS" if "cs" in name.lower() else "IT")
         inv_req = invigilators_required if invigilators_required is not None else (1 if calc_cap <= 40 else (2 if calc_cap <= 65 else 3))
 
@@ -922,6 +922,8 @@ class DataStore:
             room["department"] = department.strip()
         if reserve_capacity is not None:
             room["reserve_capacity"] = int(reserve_capacity)
+        elif room.get("room_type") == "lab" or room["capacity"] < 50:
+            room["reserve_capacity"] = 0
         if invigilators_required is not None:
             room["invigilators_required"] = int(invigilators_required)
         self.save()

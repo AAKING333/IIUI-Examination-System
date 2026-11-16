@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
-import { Plus, Trash2, Sparkles, Calendar, Settings } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Modal from '../components/Modal.jsx';
+import { masterDataService } from '../services/index.js';
+import { formatTime12, formatTimeRange12, formatSlotTime, formatDateAndSlotTime } from '../utils/timeFormat.js';
 
 export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner }) {
   // Auto-generate modal state
@@ -29,6 +30,77 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
   });
   const [presetDate, setPresetDate] = useState('2026-10-26');
   const [studyHolidays, setStudyHolidays] = useState('');
+  const [selectedPreset, setSelectedPreset] = useState('midterm'); // 'midterm' | 'terminal'
+
+  // Editable Preset Templates
+  const [presetTemplates, setPresetTemplates] = useState({
+    midterm: {
+      name: 'Midterm Examination',
+      days: 8,
+      sessions: [
+        { start_time: '08:45', end_time: '10:15', label: 'Morning 1', slot_type: 'written' },
+        { start_time: '10:30', end_time: '12:00', label: 'Morning 2', slot_type: 'written' },
+        { start_time: '14:30', end_time: '16:00', label: 'Afternoon 1', slot_type: 'written' },
+        { start_time: '16:15', end_time: '17:45', label: 'Afternoon 2', slot_type: 'written' },
+      ],
+    },
+    terminal: {
+      name: 'Terminal Examination',
+      days: 18,
+      sessions: [
+        { start_time: '08:45', end_time: '11:45', label: 'Morning', slot_type: 'written' },
+        { start_time: '14:30', end_time: '17:30', label: 'Afternoon', slot_type: 'written' },
+      ],
+    },
+  });
+
+  const [editingPresetKey, setEditingPresetKey] = useState(null); // 'midterm' | 'terminal' | null
+  const [presetEditForm, setPresetEditForm] = useState(null);
+
+  useEffect(() => {
+    masterDataService.getPresetTemplates()
+      .then((data) => {
+        if (data && data.midterm && data.terminal) {
+          setPresetTemplates(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleOpenPresetEditor = (presetKey, e) => {
+    e?.stopPropagation();
+    const current = presetTemplates[presetKey];
+    if (!current) return;
+    setEditingPresetKey(presetKey);
+    setPresetEditForm({
+      name: current.name || (presetKey === 'midterm' ? 'Midterm Examination' : 'Terminal Examination'),
+      days: current.days || (presetKey === 'midterm' ? 8 : 18),
+      sessions: (current.sessions || []).map((s) => ({ ...s })),
+    });
+  };
+
+  const handleSavePresetEdit = async () => {
+    if (!editingPresetKey || !presetEditForm) return;
+    const updated = {
+      ...presetTemplates,
+      [editingPresetKey]: {
+        ...presetTemplates[editingPresetKey],
+        ...presetEditForm,
+      },
+    };
+    try {
+      setIsSubmitting(true);
+      await masterDataService.savePresetTemplates(updated);
+      setPresetTemplates(updated);
+      setEditingPresetKey(null);
+      setPresetEditForm(null);
+      showBanner?.(`${presetEditForm.name || 'Preset'} updated and saved successfully!`, 'success');
+    } catch (err) {
+      showBanner?.(`Failed to save preset: ${err.message}`, 'danger');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [clearAllConfirm, setClearAllConfirm] = useState(false);
@@ -212,6 +284,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
   const executePreset = async (preset) => {
     setIsSubmitting(true);
     try {
+      const template = presetTemplates[preset];
       const res = await fetch('/api/time-slots/presets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -220,6 +293,8 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           from_date: presetDate,
           study_holidays: studyHolidays.split(',').map((date) => date.trim()).filter(Boolean),
           replace_existing: true,
+          requested_days: template?.days,
+          custom_sessions: template?.sessions,
         }),
       });
       if (!res.ok) {
@@ -333,8 +408,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
             className="btn btn--outline"
             onClick={handleOpenAddSingle}
           >
-            <Plus size={16} />
-            Add Single Slot
+            + Add Single Slot
           </button>
 
           <button
@@ -345,7 +419,6 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
               setIsAutoModalOpen(true);
             }}
           >
-            <Sparkles size={16} />
             Generate Time Slots
           </button>
 
@@ -356,7 +429,6 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
               onClick={() => setClearAllConfirm(true)}
               title="Delete all slots"
             >
-              <Trash2 size={15} />
               Clear All Slots
             </button>
           )}
@@ -410,8 +482,8 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                 </td>
                 <td>{formatDisplayDate(s.date)}</td>
                 <td>
-                  <span className="badge badge--muted">
-                    {s.start_time} &ndash; {s.end_time}
+                  <span className="badge badge--muted" style={{ fontWeight: 600 }}>
+                    {formatTimeRange12(s.start_time, s.end_time)}
                   </span>
                 </td>
                 <td style={{ textAlign: 'right' }}>
@@ -430,7 +502,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                       onClick={() => setDeleteConfirm(s)}
                       title="Delete time slot"
                     >
-                      <Trash2 size={13} /> Delete
+                      Delete
                     </button>
                   </div>
                 </td>
@@ -457,13 +529,26 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         onClose={() => setIsAutoModalOpen(false)}
         footer={
           generateMode === 'preset' ? (
-            <button
-              type="button"
-              className="btn btn--outline"
-              onClick={() => setIsAutoModalOpen(false)}
-            >
-              Close
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn--outline"
+                onClick={() => setIsAutoModalOpen(false)}
+                disabled={isSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={() => handleRequestPreset(selectedPreset)}
+                disabled={isSubmitting || !presetDate}
+              >
+                {isSubmitting
+                  ? 'Applying...'
+                  : `Generate ${selectedPreset === 'midterm' ? 'Midterm' : 'Terminal'} Slots`}
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -488,36 +573,50 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           )
         }
       >
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', borderBottom: '1px solid var(--itms-border)', paddingBottom: '0.75rem' }}>
+        <div style={{ display: 'inline-flex', background: '#f1f5f9', padding: '3px', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '1.25rem' }}>
           <button
             type="button"
-            className={`btn btn--sm ${generateMode === 'preset' ? 'btn--primary' : 'btn--outline'}`}
+            style={{
+              padding: '6px 14px',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              background: generateMode === 'preset' ? '#ffffff' : 'transparent',
+              color: generateMode === 'preset' ? 'var(--iiui-navy, #1e3a5f)' : '#64748b',
+              boxShadow: generateMode === 'preset' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              transition: 'all 0.15s ease',
+            }}
             onClick={() => setGenerateMode('preset')}
           >
-            <Calendar size={14} style={{ marginRight: '0.35rem' }} />
-            Official IIUI Presets
+            Official Presets
           </button>
           <button
             type="button"
-            className={`btn btn--sm ${generateMode === 'custom' ? 'btn--primary' : 'btn--outline'}`}
+            style={{
+              padding: '6px 14px',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              background: generateMode === 'custom' ? '#ffffff' : 'transparent',
+              color: generateMode === 'custom' ? 'var(--iiui-navy, #1e3a5f)' : '#64748b',
+              boxShadow: generateMode === 'custom' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              transition: 'all 0.15s ease',
+            }}
             onClick={() => setGenerateMode('custom')}
           >
-            <Settings size={14} style={{ marginRight: '0.35rem' }} />
-            Custom Range Generator
+            Custom Range
           </button>
         </div>
 
         {generateMode === 'preset' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ background: 'var(--iiui-green-50)', padding: '0.85rem 1.15rem', borderRadius: 'var(--itms-radius-sm)', border: '1px solid var(--iiui-green-200)' }}>
-              <span style={{ fontSize: '0.84rem', color: 'var(--iiui-green-900)', fontWeight: 500 }}>
-                Choose an official IIUI examination preset. The system will automatically build morning and afternoon examination sessions for the entire semester.
-              </span>
-            </div>
-
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">Preset Start Date</label>
+                <label className="form-label" style={{ fontWeight: 600 }}>Exam Start Date</label>
                 <input
                   type="date"
                   className="form-control"
@@ -528,88 +627,161 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                 <span className="form-hint">First examination date</span>
               </div>
               <div className="form-group">
-                <label className="form-label">Study Holidays (Optional)</label>
+                <label className="form-label" style={{ fontWeight: 600 }}>Study Holidays (Optional)</label>
                 <input
                   type="text"
                   className="form-control"
                   value={studyHolidays}
                   onChange={(e) => setStudyHolidays(e.target.value)}
-                  placeholder="YYYY-MM-DD, YYYY-MM-DD"
+                  placeholder="e.g. 2026-11-01, 2026-11-05"
                 />
-                <span className="form-hint">Comma-separated dates to skip as study preparation days</span>
+                <span className="form-hint">Comma-separated dates to skip (YYYY-MM-DD)</span>
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '0.5rem' }}>
-              <div
-                style={{
-                  border: '1px solid var(--itms-border)',
-                  borderRadius: 'var(--itms-radius)',
-                  padding: '1.25rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  background: 'var(--itms-card-bg, #fff)',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                    <span style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--iiui-navy)' }}>📘 IIUI Midterm Preset</span>
-                  </div>
-                  <p style={{ fontSize: '0.82rem', color: 'var(--itms-text-muted)', margin: 0, lineHeight: 1.45 }}>
-                    Standard IIUI midterm schedule: 2 daily sessions (Morning 08:45–10:15 &amp; Morning 10:45–12:15) across 8 consecutive working days.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn--primary"
-                  style={{ marginTop: '1rem', width: '100%' }}
-                  onClick={() => handleRequestPreset('midterm')}
-                  disabled={isSubmitting}
+            <div>
+              <label className="form-label" style={{ fontWeight: 600, marginBottom: '0.5rem', display: 'block' }}>
+                Select Preset Schedule
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                {/* Midterm Card */}
+                <div
+                  onClick={() => setSelectedPreset('midterm')}
+                  style={{
+                    border: selectedPreset === 'midterm' ? '1.5px solid var(--iiui-green-700, #15803d)' : '1.5px solid #e2e8f0',
+                    borderRadius: '8px',
+                    padding: '1rem',
+                    cursor: 'pointer',
+                    background: selectedPreset === 'midterm' ? '#f0fdf4' : '#ffffff',
+                    boxShadow: selectedPreset === 'midterm' ? '0 1px 4px rgba(21, 128, 61, 0.12)' : '0 1px 2px rgba(0,0,0,0.03)',
+                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.65rem',
+                  }}
                 >
-                  {isSubmitting ? 'Applying...' : 'Apply Midterm Preset'}
-                </button>
-              </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+                      <input
+                        type="radio"
+                        name="examPreset"
+                        checked={selectedPreset === 'midterm'}
+                        onChange={() => setSelectedPreset('midterm')}
+                        style={{ cursor: 'pointer', accentColor: 'var(--iiui-green-700, #15803d)' }}
+                      />
+                      <strong style={{ fontSize: '0.92rem', color: 'var(--iiui-navy, #1e3a5f)' }}>
+                        {presetTemplates.midterm?.name || 'Midterm Examination'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          padding: '2px 7px',
+                          borderRadius: '4px',
+                          background: selectedPreset === 'midterm' ? '#dcfce7' : '#f1f5f9',
+                          color: selectedPreset === 'midterm' ? '#166534' : '#64748b',
+                        }}
+                      >
+                        {presetTemplates.midterm?.days || 8} Days
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--outline"
+                        style={{ padding: '2px 7px', fontSize: '0.72rem', borderColor: '#cbd5e1' }}
+                        onClick={(e) => handleOpenPresetEditor('midterm', e)}
+                        title="Edit Midterm Preset sessions & timings"
+                      >
+                        Edit Preset
+                      </button>
+                    </div>
+                  </div>
 
-              <div
-                style={{
-                  border: '1px solid var(--itms-border)',
-                  borderRadius: 'var(--itms-radius)',
-                  padding: '1.25rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  background: 'var(--itms-card-bg, #fff)',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                    <span style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--iiui-navy)' }}>🎓 Terminal Exam Preset</span>
+                  <div style={{ fontSize: '0.78rem', color: '#475569', lineHeight: 1.5, paddingLeft: '1.45rem' }}>
+                    <div style={{ fontWeight: 600, marginBottom: '3px' }}>
+                      {presetTemplates.midterm?.sessions?.length || 4} daily sessions (90 mins each):
+                    </div>
+                    {(presetTemplates.midterm?.sessions || []).map((sess, idx) => (
+                      <div key={idx} style={{ color: '#475569', display: 'flex', justifyContent: 'space-between', padding: '1px 0' }}>
+                        <span>&bull; {sess.label || `Slot ${idx + 1}`}:</span>
+                        <strong style={{ color: 'var(--iiui-navy)' }}>{formatTimeRange12(sess.start_time, sess.end_time)}</strong>
+                      </div>
+                    ))}
                   </div>
-                  <p style={{ fontSize: '0.82rem', color: 'var(--itms-text-muted)', margin: 0, lineHeight: 1.45 }}>
-                    Comprehensive terminal exam schedule: 3 daily sessions (Morning 1, Morning 2, Afternoon) across 15–18 days with scheduled prep breaks.
-                  </p>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn--secondary"
-                  style={{ marginTop: '1rem', width: '100%' }}
-                  onClick={() => handleRequestPreset('terminal')}
-                  disabled={isSubmitting}
+
+                {/* Terminal Card */}
+                <div
+                  onClick={() => setSelectedPreset('terminal')}
+                  style={{
+                    border: selectedPreset === 'terminal' ? '1.5px solid var(--iiui-navy, #1e3a5f)' : '1.5px solid #e2e8f0',
+                    borderRadius: '8px',
+                    padding: '1rem',
+                    cursor: 'pointer',
+                    background: selectedPreset === 'terminal' ? '#f0f9ff' : '#ffffff',
+                    boxShadow: selectedPreset === 'terminal' ? '0 1px 4px rgba(30, 58, 95, 0.12)' : '0 1px 2px rgba(0,0,0,0.03)',
+                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.65rem',
+                  }}
                 >
-                  {isSubmitting ? 'Applying...' : 'Apply Terminal Preset'}
-                </button>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+                      <input
+                        type="radio"
+                        name="examPreset"
+                        checked={selectedPreset === 'terminal'}
+                        onChange={() => setSelectedPreset('terminal')}
+                        style={{ cursor: 'pointer', accentColor: 'var(--iiui-navy, #1e3a5f)' }}
+                      />
+                      <strong style={{ fontSize: '0.92rem', color: 'var(--iiui-navy, #1e3a5f)' }}>
+                        {presetTemplates.terminal?.name || 'Terminal Examination'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          padding: '2px 7px',
+                          borderRadius: '4px',
+                          background: selectedPreset === 'terminal' ? '#e0f2fe' : '#f1f5f9',
+                          color: selectedPreset === 'terminal' ? '#0369a1' : '#64748b',
+                        }}
+                      >
+                        {presetTemplates.terminal?.days || 18} Days
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--outline"
+                        style={{ padding: '2px 7px', fontSize: '0.72rem', borderColor: '#cbd5e1' }}
+                        onClick={(e) => handleOpenPresetEditor('terminal', e)}
+                        title="Edit Terminal Preset sessions & timings"
+                      >
+                        Edit Preset
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: '0.78rem', color: '#475569', lineHeight: 1.5, paddingLeft: '1.45rem' }}>
+                    <div style={{ fontWeight: 600, marginBottom: '3px' }}>
+                      {presetTemplates.terminal?.sessions?.length || 2} daily sessions (3 hrs each):
+                    </div>
+                    {(presetTemplates.terminal?.sessions || []).map((sess, idx) => (
+                      <div key={idx} style={{ color: '#475569', display: 'flex', justifyContent: 'space-between', padding: '1px 0' }}>
+                        <span>&bull; {sess.label || `Slot ${idx + 1}`}:</span>
+                        <strong style={{ color: 'var(--iiui-navy)' }}>{formatTimeRange12(sess.start_time, sess.end_time)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         ) : (
           <form onSubmit={handleAutoGenerateSubmit}>
-            <div style={{ background: 'var(--iiui-green-50)', padding: '0.85rem 1.15rem', borderRadius: 'var(--itms-radius-sm)', marginBottom: '1.25rem', border: '1px solid var(--iiui-green-200)' }}>
-              <span style={{ fontSize: '0.84rem', color: 'var(--iiui-green-900)', fontWeight: 500 }}>
-                Specify custom examination date ranges, operational hours, and session lengths. The engine will automatically compute and divide each day into chronological examination slots.
-              </span>
-            </div>
-
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">From Date</label>
@@ -786,7 +958,9 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
 
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">Session Start Time (HH:MM)</label>
+              <label className="form-label">
+                Session Start Time {singleFormData.start_time ? `(${formatTime12(singleFormData.start_time)})` : ''}
+              </label>
               <input
                 type="time"
                 className="form-control"
@@ -796,7 +970,9 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Session End Time (HH:MM)</label>
+              <label className="form-label">
+                Session End Time {singleFormData.end_time ? `(${formatTime12(singleFormData.end_time)})` : ''}
+              </label>
               <input
                 type="time"
                 className="form-control"
@@ -848,8 +1024,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       >
         <p style={{ margin: 0, fontSize: '0.88rem' }}>
           Are you sure you want to delete time slot <strong>{deleteConfirm?.id}</strong> on{' '}
-          <strong>{deleteConfirm?.date}</strong> ({deleteConfirm?.start_time} &ndash;{' '}
-          {deleteConfirm?.end_time})?
+          <strong>{deleteConfirm?.date}</strong> ({formatTimeRange12(deleteConfirm?.start_time, deleteConfirm?.end_time)})?
         </p>
       </Modal>
 
@@ -885,6 +1060,162 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         <p style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--itms-danger)' }}>
           You can re-generate them at any time using the <strong>Auto Generate Time Slots</strong> tool.
         </p>
+      </Modal>
+
+      {/* Preset Customization / Edit Modal */}
+      <Modal
+        isOpen={Boolean(editingPresetKey && presetEditForm)}
+        title={`Customize ${presetEditForm?.name || 'Preset'}`}
+        size="md"
+        onClose={() => { setEditingPresetKey(null); setPresetEditForm(null); }}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={() => { setEditingPresetKey(null); setPresetEditForm(null); }}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={handleSavePresetEdit}
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Saving...' : 'Save Preset Changes'}
+            </button>
+          </>
+        }
+      >
+        {presetEditForm && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label" style={{ fontWeight: 600 }}>Preset Name</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={presetEditForm.name}
+                  onChange={(e) => setPresetEditForm({ ...presetEditForm, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ maxWidth: '140px' }}>
+                <label className="form-label" style={{ fontWeight: 600 }}>Total Days</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="60"
+                  className="form-control"
+                  value={presetEditForm.days}
+                  onChange={(e) => setPresetEditForm({ ...presetEditForm, days: parseInt(e.target.value, 10) || 1 })}
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <label className="form-label" style={{ fontWeight: 600, margin: 0 }}>
+                  Daily Examination Sessions ({presetEditForm.sessions.length})
+                </label>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--outline"
+                  onClick={() => {
+                    const newSession = {
+                      start_time: '08:45',
+                      end_time: '10:15',
+                      label: `Session ${presetEditForm.sessions.length + 1}`,
+                      slot_type: 'written',
+                    };
+                    setPresetEditForm({
+                      ...presetEditForm,
+                      sessions: [...presetEditForm.sessions, newSession],
+                    });
+                  }}
+                  style={{ fontSize: '0.74rem', padding: '2px 8px' }}
+                >
+                  + Add Session
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {presetEditForm.sessions.map((sess, sIdx) => (
+                  <div
+                    key={sIdx}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      padding: '0.5rem 0.75rem',
+                      background: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '6px',
+                    }}
+                  >
+                    <input
+                      type="text"
+                      className="form-control"
+                      style={{ flex: 1.2, fontSize: '0.82rem' }}
+                      value={sess.label}
+                      placeholder="Session Label"
+                      onChange={(e) => {
+                        const copy = [...presetEditForm.sessions];
+                        copy[sIdx].label = e.target.value;
+                        setPresetEditForm({ ...presetEditForm, sessions: copy });
+                      }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <input
+                        type="time"
+                        className="form-control"
+                        style={{ width: '105px', fontSize: '0.82rem', padding: '4px 6px' }}
+                        value={sess.start_time}
+                        onChange={(e) => {
+                          const copy = [...presetEditForm.sessions];
+                          copy[sIdx].start_time = e.target.value;
+                          setPresetEditForm({ ...presetEditForm, sessions: copy });
+                        }}
+                      />
+                      <span style={{ fontSize: '0.75rem', color: '#64748b' }}>to</span>
+                      <input
+                        type="time"
+                        className="form-control"
+                        style={{ width: '105px', fontSize: '0.82rem', padding: '4px 6px' }}
+                        value={sess.end_time}
+                        onChange={(e) => {
+                          const copy = [...presetEditForm.sessions];
+                          copy[sIdx].end_time = e.target.value;
+                          setPresetEditForm({ ...presetEditForm, sessions: copy });
+                        }}
+                      />
+                    </div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--iiui-navy)', minWidth: '135px' }}>
+                      {formatTimeRange12(sess.start_time, sess.end_time)}
+                    </span>
+                    {presetEditForm.sessions.length > 1 && (
+                      <button
+                        type="button"
+                        className="btn btn--danger btn--sm"
+                        style={{ padding: '2px 6px', fontSize: '0.74rem' }}
+                        onClick={() => {
+                          const copy = presetEditForm.sessions.filter((_, i) => i !== sIdx);
+                          setPresetEditForm({ ...presetEditForm, sessions: copy });
+                        }}
+                        title="Remove session"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Preset Replace Confirmation Modal */}

@@ -1505,6 +1505,11 @@
   padding: 1rem 1.25rem;
   margin-bottom: 1.5rem;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  transition: padding 0.2s ease, box-shadow 0.2s ease;
+}
+
+.slot-venues-directory--collapsed {
+  padding: 0.75rem 1.25rem;
 }
 
 .slot-venues-directory__header {
@@ -1530,6 +1535,18 @@
   align-items: center;
   gap: 0.5rem;
   margin: 0;
+}
+
+.slot-venues-directory__count-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  padding: 2px 9px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #475569;
 }
 
 .slot-venues-directory__stats {
@@ -1569,6 +1586,35 @@
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.slot-venues-directory__toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: var(--iiui-navy, #1e3a5f);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.slot-venues-directory__toggle-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.06);
+}
+
+.slot-venues-directory__toggle-btn--open {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #334155;
 }
 
 /* Category Filter Pills (All, Halls, Labs) */
@@ -1963,17 +2009,8 @@
 }
 
 /* =============================================
-   RESERVE BUFFER & OVERFLOW STUDENT STYLES
+   RESERVE BUFFER STYLES
    ============================================= */
-
-/* Overflow (Back-Paper) student badge highlight */
-.student-overflow-badge,
-.student-overflow-cell {
-  border: 2px solid #ef4444 !important;
-  background: #fff1f2 !important;
-  color: #b91c1c !important;
-  font-weight: 700 !important;
-}
 
 .seat-cell--reserved {
   font-style: italic;

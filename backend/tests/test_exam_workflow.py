@@ -11,7 +11,9 @@ _database_directory = tempfile.TemporaryDirectory()
 os.environ["EXAM_PORTAL_DB"] = str(Path(_database_directory.name) / "exam-test.sqlite3")
 
 import data
+import datesheet
 import main
+import seating
 from database import DATABASE_PATH, SQLiteDatabase
 from fastapi import HTTPException
 from app.services.invigilation_service import (
@@ -266,6 +268,10 @@ class ExamWorkflowTests(unittest.TestCase):
         self.assertIn("2026", str(row7_val))
         self.assertIn("-", str(row7_val))
 
+        # Verify Row 8 has 12-hour AM/PM formatted session time
+        row8_time = str(ws.cell(8, 1).value)
+        self.assertTrue("AM" in row8_time or "PM" in row8_time, f"Time in XLSX export must use 12-hour AM/PM: {row8_time}")
+
         # Test PDF export
         pdf_res = main.export_datesheet_pdf()
         self.assertEqual(pdf_res.status_code, 200)
@@ -515,6 +521,76 @@ class ExamWorkflowTests(unittest.TestCase):
         reg = main.regenerate_seating_plan("S1")
         reg_rooms = [r["room_name"] for r in reg["rooms"]]
         self.assertIn("Lab 4", reg_rooms)
+
+    def test_terminal_datesheet_study_gap_rule(self):
+        """Rule 9: In Final/Terminal datesheet, batches must get at least 1 day study gap between theory exams."""
+        from datetime import datetime, timedelta
+        base_d = datetime(2026, 12, 1)
+        terminal_slots = []
+        slot_num = 1
+        for day_idx in range(18):
+            d = (base_d + timedelta(days=day_idx)).date()
+            if d.weekday() >= 5:
+                continue
+            d_str = d.strftime("%Y-%m-%d")
+            terminal_slots.append({"id": f"S{slot_num}", "date": d_str, "start_time": "08:45", "end_time": "11:45", "label": "Morning"})
+            slot_num += 1
+            terminal_slots.append({"id": f"S{slot_num}", "date": d_str, "start_time": "14:30", "end_time": "17:30", "label": "Afternoon"})
+            slot_num += 1
+
+        res = datesheet.generate_datesheet(time_slots=terminal_slots)
+        self.assertEqual(len(res["unplaced"]), 0, "All courses should be placed in terminal exam.")
+
+        from collections import defaultdict
+        cohort_dates = defaultdict(set)
+        for e in res["datesheet"]:
+            if not e.get("is_lab"):
+                cohort_dates[(e.get("program"), e.get("batch"))].add(e["date"])
+
+        for cohort, dates in cohort_dates.items():
+            sorted_dates = sorted(list(dates))
+            for i in range(len(sorted_dates) - 1):
+                d1 = datetime.strptime(sorted_dates[i], "%Y-%m-%d").date()
+                d2 = datetime.strptime(sorted_dates[i + 1], "%Y-%m-%d").date()
+                diff = (d2 - d1).days
+                self.assertGreaterEqual(
+                    diff, 2,
+                    f"Cohort {cohort} has theory exams on consecutive days {d1} and {d2} with 0 study gap days!"
+                )
+
+    def test_buffer_seats_only_for_large_rooms_and_repeater_courses(self):
+        """Rule 10: Buffer seats only in 50+ cap rooms (R18 & R26) and only active for repeater courses (>=5 repeaters)."""
+        # Master data check:
+        for r in data.store.get_rooms():
+            cap = r.get("capacity", 0)
+            res_cap = r.get("reserve_capacity", 0)
+            if cap >= 50 and r.get("room_type") != "lab":
+                self.assertGreater(res_cap, 0, f"Large room {r['name']} must have buffer reserve capacity.")
+            else:
+                self.assertEqual(res_cap, 0, f"Room {r['name']} (cap {cap}) must have 0 reserve capacity.")
+
+        # Seating plan check without repeaters:
+        courses_without_repeaters = [c for c in data.store.get_courses() if c["code"] in ("CS101", "CS201")]
+        plan_no_rep = seating.build_seating_plan(courses_without_repeaters)
+        for r in plan_no_rep.get("rooms", []):
+            self.assertEqual(
+                r.get("reserve_capacity", 0), 0,
+                f"Room {r['room_name']} should have 0 reserve capacity when courses have no repeaters."
+            )
+
+        # Seating plan check with repeater course GEC112 (has 6 repeaters):
+        course_gec112 = [c for c in data.store.get_courses() if c["code"] == "GEC112"]
+        plan_rep = seating.build_seating_plan(course_gec112)
+        for r in plan_rep.get("rooms", []):
+            cap = r.get("capacity", 0)
+            res = r.get("reserve_capacity", 0)
+            if cap >= 50:
+                self.assertEqual(res, r.get("columns", 0), f"Large room {r['room_name']} must activate reserve seats for repeater course equal to columns.")
+                self.assertTrue(r.get("has_buffer_row"), f"Large room {r['room_name']} must have has_buffer_row=True.")
+                self.assertTrue(all(cell.get("roll_no") == "Buffer" and cell.get("is_buffer") for cell in r["grid"][-1]))
+            else:
+                self.assertEqual(res, 0, f"Small room {r['room_name']} must have 0 reserve seats.")
+                self.assertFalse(r.get("has_buffer_row", False))
 
 
 if __name__ == "__main__":

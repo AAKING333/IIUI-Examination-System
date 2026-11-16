@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { formatTimeRange12 } from '../utils/timeFormat.js';
 
 export default function RollSlipPage({ showBanner }) {
   const [students, setStudents] = useState([]);
@@ -367,8 +368,8 @@ export default function RollSlipPage({ showBanner }) {
                       <span style={{ fontWeight: 600 }}>{p.date}</span>
                       <span style={{ display: 'block', fontSize: '0.72rem', color: '#64748b' }}>{p.day_name}</span>
                     </td>
-                    <td style={{ border: '1px solid #cbd5e1', padding: '6px', textAlign: 'center', fontFamily: 'monospace' }}>
-                      {p.start_time}&ndash;{p.end_time}
+                    <td style={{ border: '1px solid #cbd5e1', padding: '6px', textAlign: 'center', fontSize: '0.8rem', fontWeight: 600 }}>
+                      {formatTimeRange12(p.start_time, p.end_time)}
                     </td>
                     <td style={{ border: '1px solid #cbd5e1', padding: '6px', textAlign: 'center', fontWeight: 700, color: '#1e3a8a' }}>
                       {p.room || '—'}
