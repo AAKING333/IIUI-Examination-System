@@ -17,16 +17,22 @@ import seating
 from database import DATABASE_PATH, SQLiteDatabase
 from fastapi import HTTPException
 from app.services.invigilation_service import (
+    _is_own_subject,
     create_manual_duty,
+    delete_faculty_policy,
     delete_manual_duty,
     generate_duties,
     get_faculty_workload,
     get_roster_summary,
+    is_ecl_member,
     is_ecr_member,
+    is_no_duty_member,
     list_duties,
+    list_faculty_policy,
     normalize_name,
     recalculate_duties,
     update_manual_duty,
+    upsert_faculty_policy,
 )
 
 
@@ -200,7 +206,14 @@ class ExamWorkflowTests(unittest.TestCase):
             plan = main._resolve_seating_plan(d["slot_id"])
             room = next(r for r in plan["rooms"] if r["room_id"] == d["room_id"])
             lab_teachers = set(t for t in (room.get("column_teachers") or []) if t)
-            self.assertIn(d["instructor"], lab_teachers)
+            # The seated column teacher normally invigilates, but a teacher
+            # on the no-duty list is never allotted a duty; a co-instructor
+            # of the same lab course covers instead.
+            allowed = set(lab_teachers)
+            for code in {c["course_code"] for c in room["seating_sheet"]["columns"] if c["course_code"]}:
+                allowed.update(data.store.get_instructors_for_course(code))
+            self.assertIn(d["instructor"], allowed)
+            self.assertFalse(is_no_duty_member(d["instructor"]))
 
     def test_no_adjacent_columns_share_same_course_and_instructor_in_halls(self):
         published = main.generate_datesheet_endpoint()
@@ -305,18 +318,44 @@ class ExamWorkflowTests(unittest.TestCase):
                 self.assertEqual(room["assigned"], expected, room["room_name"])
 
         hall_instructors = defaultdict(set)
+        rotation_by_slot = defaultdict(int)
         counted = Counter()
         for duty in summary["duties"]:
             self.assertEqual(
                 duty["is_counted"],
-                0 if duty["duty_type"] == "own_subject" else 1,
+                0 if duty["duty_type"] in ("own_subject", "ecr_rotation") else 1,
             )
             if duty["is_counted"]:
                 counted[normalize_name(duty["instructor"])] += 1
-            if duty["room_type"] != "lab":
+            if duty["duty_type"] == "ecr_rotation":
+                rotation_by_slot[duty["slot_id"]] += 1
+                self.assertLessEqual(
+                    rotation_by_slot[duty["slot_id"]], 1,
+                    f"Slot {duty['slot_id']} has more than one ECR rotation duty.",
+                )
+                # Own paper -> no ECR duty in that slot.
+                slot_entries = [
+                    entry for entry in main.datesheet_state["datesheet"]
+                    if entry.get("slot_id") == duty["slot_id"]
+                ]
                 self.assertFalse(
-                    is_ecr_member(duty["instructor"]),
-                    f"ECR member {duty['instructor']} assigned to a hall",
+                    _is_own_subject(duty["instructor"], slot_entries),
+                    f"{duty['instructor']} holds an ECR rotation duty in a slot "
+                    "where their own paper runs.",
+                )
+            if duty["room_type"] != "lab":
+                # ECL members carry only own-subject duties; no-duty role is
+                # never on the roster; the Chairman only covers own exams.
+                if is_ecl_member(duty["instructor"]):
+                    self.assertEqual(
+                        duty["duty_type"], "own_subject",
+                        f"{duty['instructor']} given an extra duty but is "
+                        "ECL exempt",
+                    )
+                self.assertFalse(
+                    is_no_duty_member(duty["instructor"]),
+                    f"{duty['instructor']} has the no-duty role but was "
+                    "allotted a hall duty.",
                 )
                 normalized = normalize_name(duty["instructor"])
                 self.assertNotIn(
@@ -326,9 +365,169 @@ class ExamWorkflowTests(unittest.TestCase):
                 hall_instructors[duty["slot_id"]].add(normalized)
 
         self.assertTrue(
+            any(rotation_by_slot.values()),
+            "Expected ECR rotation relief duties to be generated.",
+        )
+        self.assertTrue(
             all(value <= 4 for value in counted.values()),
             f"Extra-duty cap violated: {dict(counted)}",
         )
+        for member in get_faculty_workload():
+            if member["is_senior_role"]:
+                self.assertLessEqual(
+                    member["extra_duties"], 2,
+                    f"Dire-need senior {member['name']} exceeded two extra duties.",
+                )
+
+    def test_invigilation_own_subject_room_placement(self):
+        """Every own-subject hall duty sits in the room where the course is seated."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        duties = list_duties()
+        self.assertTrue(duties)
+        checked = 0
+        for duty in duties:
+            if duty["duty_type"] != "own_subject" or duty["room_type"] == "lab":
+                continue
+            plan = main._resolve_seating_plan(duty["slot_id"])
+            room = next(
+                (r for r in plan["rooms"] if r["room_id"] == duty["room_id"]), None
+            )
+            self.assertIsNotNone(room, f"Room {duty['room_id']} missing from plan")
+            seated_teachers = {
+                normalize_name(t) for t in (room.get("column_teachers") or []) if t
+            }
+            self.assertIn(
+                normalize_name(duty["instructor"]), seated_teachers,
+                f"{duty['instructor']} own-subject duty is not in the hall seating "
+                f"their course ({room['room_name']}, slot {duty['slot_id']})",
+            )
+            checked += 1
+        self.assertGreater(checked, 0, "Expected at least one own-subject hall duty.")
+
+    def test_invigilation_no_duty_list_and_ecl_members(self):
+        """Role defaults match the rulings: ECL own-exams, chairman own exam,
+        dire-need seniors capped, ECR rotation, and nobody on no-duty by default."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        summary = get_roster_summary()
+
+        no_duty_names = {m["name"] for m in summary["faculty"] if m["is_no_duty"]}
+        ecl_names = {m["name"] for m in summary["faculty"] if m["is_ecl"]}
+        chairman_names = {m["name"] for m in summary["faculty"] if m["is_chairman"]}
+        senior_names = {m["name"] for m in summary["faculty"] if m["is_senior_role"]}
+        ecr_names = {m["name"] for m in summary["faculty"] if m["is_ecr"]}
+        # The latest ruling retired the no-duty default: the Chairman holds
+        # his own exam duty and the most-senior teachers carry dire-need
+        # duties, so nobody defaults to the no_duty role.
+        self.assertEqual(no_duty_names, set())
+        # ECL is now only Imran Saeed and Tahir Hussain; Jibran Mir moved to
+        # the ECR rotation pool.
+        self.assertTrue(any("imransaeed" in n for n in {normalize_name(x) for x in ecl_names}))
+        self.assertTrue(any("tahirhussain" in n for n in {normalize_name(x) for x in ecl_names}))
+        self.assertFalse(any("jibran" in n for n in {normalize_name(x) for x in ecl_names}))
+        self.assertTrue(any("jibran" in n for n in {normalize_name(x) for x in ecr_names}))
+        self.assertTrue(any("musharraf" in n or "musharaf" in n
+                            for n in {normalize_name(x) for x in ecr_names}))
+        self.assertTrue(any("tariqsadad" in n or "tariqsaddad" in n
+                            for n in {normalize_name(x) for x in ecr_names}))
+        self.assertTrue(any("muhammadnazir" in n or "muhammadnazeer" in n
+                            for n in {normalize_name(x) for x in chairman_names}))
+        self.assertTrue(any("muhammadmajid" in n
+                            for n in {normalize_name(x) for x in senior_names}))
+
+        for member in summary["faculty"]:
+            if member["is_ecl"] or member["is_chairman"]:
+                self.assertEqual(
+                    member["extra_duties"], 0,
+                    f"{member['name']} may only invigilate their own exams.",
+                )
+            if member["is_ecr"]:
+                # ECR members carry rotation duties, which are exempt from
+                # the extra-duty cap, and no counted extras of their own.
+                self.assertEqual(
+                    member["extra_duties"], 0,
+                    f"ECR member {member['name']} must not carry generic "
+                    "extra duties.",
+                )
+                self.assertGreaterEqual(member["ecr_rotation_duties"], 0)
+            if member["is_senior_role"]:
+                self.assertLessEqual(
+                    member["extra_duties"], 2,
+                    f"Dire-need senior {member['name']} exceeded two extra duties.",
+                )
+
+        for duty in summary["duties"]:
+            self.assertFalse(
+                is_no_duty_member(duty["instructor"]),
+                f"{duty['instructor']} has the no-duty role but was "
+                f"allotted a duty ({duty['slot_id']} / {duty['room_name']}).",
+            )
+            if is_ecl_member(duty["instructor"]):
+                self.assertEqual(
+                    duty["duty_type"], "own_subject",
+                    f"{duty['instructor']} must only have own-subject duties.",
+                )
+            if duty.get("is_chairman"):
+                self.assertEqual(
+                    duty["duty_type"], "own_subject",
+                    "The Chairman/HOD may only hold the duty of their own exam.",
+                )
+
+    def test_manual_duty_rejects_no_duty_and_ecl_members(self):
+        """Manual overrides cannot allot duties to exempt roles (ECL, chairman,
+        no-duty via policy)."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        summary = get_roster_summary()
+        duty = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab" and item["required_invigilators"] == 1
+        )
+        plan = main._resolve_seating_plan(duty["slot_id"])
+        room = next(r for r in plan["rooms"] if r["room_id"] == duty["room_id"])
+        seated_teachers = {
+            normalize_name(t) for t in (room.get("column_teachers") or []) if t
+        }
+        rejected = 0
+        for member in get_faculty_workload():
+            normalized = normalize_name(member["name"])
+            if member["is_ecl"] or member["is_chairman"]:
+                # An exempt member whose own paper is seated in this exact
+                # room may be assigned there; every other placement is
+                # rejected (own exams only).
+                if normalized in seated_teachers:
+                    continue
+                with self.assertRaises(HTTPException) as context:
+                    update_manual_duty(duty["id"], {"instructor": member["name"]})
+                self.assertEqual(context.exception.status_code, 422)
+                rejected += 1
+        self.assertGreater(rejected, 0, "Expected at least one rejected exemption.")
+
+    def test_manual_duty_rejects_policy_no_duty_member(self):
+        """An admin can switch a teacher to the no-duty role; the roster and
+        manual overrides must then refuse every duty for them."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        summary = get_roster_summary()
+        member = next(
+            item for item in get_faculty_workload()
+            if item["faculty_role"] == "regular" and item["courses"]
+        )
+        upsert_faculty_policy({
+            "instructor": member["name"],
+            "role": "no_duty",
+        })
+        self.assertTrue(is_no_duty_member(member["name"]))
+        duty = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab" and item["required_invigilators"] == 1
+        )
+        with self.assertRaises(HTTPException) as context:
+            update_manual_duty(duty["id"], {"instructor": member["name"]})
+        self.assertEqual(context.exception.status_code, 422)
+        delete_faculty_policy(member["name"])
+        self.assertFalse(is_no_duty_member(member["name"]))
 
     def test_invigilation_recalculation_is_deterministic(self):
         main.generate_datesheet_endpoint()
@@ -388,6 +587,10 @@ class ExamWorkflowTests(unittest.TestCase):
         candidates = [
             faculty["name"] for faculty in get_faculty_workload()
             if not faculty["is_ecr"]
+            and not faculty["is_ecl"]
+            and not faculty["is_no_duty"]
+            and not faculty["is_chairman"]
+            and not faculty["is_visiting"]
             and faculty["remaining_extra_capacity"] > 0
             and faculty["name"] != duty["instructor"]
             and normalize_name(faculty["name"]) not in used
@@ -428,10 +631,31 @@ class ExamWorkflowTests(unittest.TestCase):
             if item["room_type"] != "lab" and item["required_invigilators"] == 1
         )
 
-        ecr_name = next(item["name"] for item in get_faculty_workload() if item["is_ecr"])
-        with self.assertRaises(HTTPException) as context:
-            update_manual_duty(duty["id"], {"instructor": ecr_name})
-        self.assertEqual(context.exception.status_code, 422)
+        # The Chairman/HOD may only hold the duty of their own exam: any
+        # other hall posting is rejected.
+        workload = get_faculty_workload()
+        chairman = next((item for item in workload if item["is_chairman"]), None)
+        if chairman:
+            normalized_chairman = normalize_name(chairman["name"])
+
+            def _seated_teachers(item):
+                plan = main._resolve_seating_plan(item["slot_id"])
+                room = next(
+                    (r for r in plan["rooms"] if r["room_id"] == item["room_id"]),
+                    None,
+                )
+                return {
+                    normalize_name(t) for t in (room.get("column_teachers") or []) if t
+                } if room else set()
+
+            target = next(
+                item for item in summary["duties"]
+                if item["room_type"] != "lab"
+                and normalized_chairman not in _seated_teachers(item)
+            )
+            with self.assertRaises(HTTPException) as context:
+                update_manual_duty(target["id"], {"instructor": chairman["name"]})
+            self.assertEqual(context.exception.status_code, 422)
 
         same_slot = next(
             item for item in summary["duties"]
@@ -455,7 +679,9 @@ class ExamWorkflowTests(unittest.TestCase):
         )
         candidate = next(
             item["name"] for item in get_faculty_workload()
-            if not item["is_ecr"] and item["remaining_extra_capacity"] > 0
+            if not item["is_ecr"] and not item["is_ecl"] and not item["is_no_duty"]
+            and not item["is_chairman"] and not item["is_visiting"]
+            and item["remaining_extra_capacity"] > 0
         )
         with self.assertRaises(HTTPException):
             create_manual_duty({
@@ -591,6 +817,223 @@ class ExamWorkflowTests(unittest.TestCase):
             else:
                 self.assertEqual(res, 0, f"Small room {r['room_name']} must have 0 reserve seats.")
                 self.assertFalse(r.get("has_buffer_row", False))
+
+    def test_ecr_rotation_pattern(self):
+        """ECR relief rotation: one duty per slot, cycling in the documented
+        order, skipping members whose own paper runs in that slot."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        from app.services.invigilation_service import (
+            _ecr_rotation_order,
+            _faculty_registry,
+        )
+        registry, _ = _faculty_registry()
+        cycle = [normalize_name(member) for member in _ecr_rotation_order(registry)]
+        self.assertEqual(len(cycle), 4, "Expected 4 ECR rotation members (both Tariq spellings included).")
+
+        all_duties = list_duties()
+        used_by_slot = defaultdict(set)
+        for duty in all_duties:
+            used_by_slot[duty["slot_id"]].add(normalize_name(duty["instructor"]))
+        rotation = sorted(
+            (d for d in all_duties if d["duty_type"] == "ecr_rotation"),
+            key=lambda d: (d["slot_date"], d["slot_start_time"]),
+        )
+        self.assertTrue(rotation, "Expected ECR rotation duties to be generated.")
+
+        def _cycle_index(name):
+            normalized = normalize_name(name)
+            return next(i for i, marker in enumerate(cycle) if marker in normalized)
+
+        prev_index = None
+        for duty in rotation:
+            index = _cycle_index(duty["instructor"])
+            if prev_index is not None:
+                step = (index - prev_index) % len(cycle)
+                self.assertGreaterEqual(step, 1, "The same ECR member took two rotation slots in a row.")
+                # Any member passed over must have been unavailable: either
+                # already assigned in the slot or busy with their own paper.
+                slot_entries = [
+                    entry for entry in main.datesheet_state["datesheet"]
+                    if entry.get("slot_id") == duty["slot_id"]
+                ]
+                for skipped in range(1, step):
+                    member = cycle[(prev_index + skipped) % len(cycle)]
+                    unavailable = member in used_by_slot[duty["slot_id"]] or _is_own_subject(
+                        member, slot_entries
+                    )
+                    self.assertTrue(
+                        unavailable,
+                        f"Rotation skipped available ECR member {member} in slot "
+                        f"{duty['slot_id']}.",
+                    )
+            prev_index = index
+
+    def test_faculty_policy_override_and_admin_added_teacher(self):
+        """Admin can add teachers and override roles / duty caps; the roster
+        and validation follow the policy immediately."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+
+        # 1. Per-teacher cap override via the policy table.
+        member = next(
+            m for m in get_faculty_workload()
+            if m["faculty_role"] == "regular" and m["courses"] and m["extra_duties"] >= 1
+        )
+        upsert_faculty_policy({
+            "instructor": member["name"],
+            "role": "regular",
+            "max_extra_duties": 1,
+        })
+        workload = {m["name"]: m for m in get_faculty_workload()}
+        self.assertEqual(workload[member["name"]]["max_duties"], 1)
+        self.assertEqual(workload[member["name"]]["remaining_extra_capacity"], 0)
+        # Re-assigning any further extra duty to them must now be refused.
+        summary = get_roster_summary()
+        member_slot = next(
+            d["slot_id"] for d in summary["duties"]
+            if normalize_name(d["instructor"]) == normalize_name(member["name"])
+            and d["is_counted"]
+        )
+        target = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab"
+            and item["slot_id"] != member_slot
+            and normalize_name(member["name"]) not in {
+                normalize_name(t)
+                for t in (next(
+                    r for r in main._resolve_seating_plan(item["slot_id"])["rooms"]
+                    if r["room_id"] == item["room_id"]
+                ).get("column_teachers") or [])
+            }
+        )
+        with self.assertRaises(HTTPException) as context:
+            update_manual_duty(target["id"], {"instructor": member["name"]})
+        self.assertEqual(context.exception.status_code, 422)
+        delete_faculty_policy(member["name"])
+
+        # 2. Admin-added teacher (no course assignment) joins the roster.
+        added_name = "Dr. Test Added Teacher"
+        upsert_faculty_policy({"instructor": added_name, "role": "visiting"})
+        added = next(
+            m for m in get_faculty_workload()
+            if normalize_name(m["name"]) == normalize_name(added_name)
+        )
+        self.assertEqual(added["faculty_role"], "visiting")
+        # Visiting faculty may only invigilate their own exam: hall postings
+        # are rejected.
+        summary = get_roster_summary()
+        duty = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab" and item["required_invigilators"] == 1
+        )
+        with self.assertRaises(HTTPException) as context:
+            update_manual_duty(duty["id"], {"instructor": added_name})
+        self.assertEqual(context.exception.status_code, 422)
+        # Role becomes regular -> the teacher can be swapped into a hall duty.
+        upsert_faculty_policy({
+            "instructor": added_name, "role": "regular", "max_extra_duties": 2,
+        })
+        # The added teacher has no duties yet, so any free hall reassignment
+        # works: pick a single-invigilator hall duty to swap onto them.
+        candidate_duty = next(
+            item for item in summary["duties"]
+            if item["room_type"] != "lab" and item["required_invigilators"] == 1
+        )
+        updated = update_manual_duty(candidate_duty["id"], {"instructor": added_name})
+        self.assertEqual(updated["instructor"], added_name)
+        # 3. Deleting the policy removes the admin-added teacher; a clean
+        # recalculation then clears any duties they were holding.
+        delete_faculty_policy(added_name)
+        recalculate_duties([], preserve_manual=False)
+        self.assertFalse(any(
+            normalize_name(m["name"]) == normalize_name(added_name)
+            for m in get_faculty_workload()
+        ))
+
+    def test_own_subject_teacher_placed_in_max_student_room(self):
+        """A course teacher's hall duty lands in the room holding the largest
+        share of their students (rooms 26/18 first), unless that room was
+        already fully staffed."""
+        main.generate_datesheet_endpoint()
+        generate_duties([])
+        summary = get_roster_summary()
+        assigned_by_room = defaultdict(int)
+        required_by_room = {}
+        for slot in summary["slots"]:
+            for room in slot["rooms"]:
+                assigned_by_room[(slot["slot_id"], room["room_id"])] = room["assigned"]
+                required_by_room[(slot["slot_id"], room["room_id"])] = room["required"]
+        checked = 0
+        for duty in list_duties():
+            if duty["duty_type"] != "own_subject" or duty["room_type"] == "lab":
+                continue
+            plan = main._resolve_seating_plan(duty["slot_id"])
+            halls = [
+                r for r in plan["rooms"]
+                if r.get("room_type") != "lab" and "Lab" not in r.get("room_name", "")
+            ]
+            counts = {}
+            seated_by_room = {}
+            for room in halls:
+                total = 0
+                for col in room["seating_sheet"]["columns"]:
+                    teachers = [
+                        p.strip() for p in str(col.get("instructor") or "").split("/")
+                    ]
+                    if not any(
+                        normalize_name(t) == normalize_name(duty["instructor"])
+                        for t in teachers
+                    ):
+                        continue
+                    total += sum(
+                        1 for roll in col["roll_nos"]
+                        if roll and str(roll).strip()
+                        and str(roll).strip().lower() != "buffer"
+                    )
+                counts[room["room_id"]] = total
+                seated_by_room[room["room_id"]] = room.get("seated", 0) or 0
+            if not counts or not any(counts.values()):
+                continue
+            best = max(
+                counts,
+                key=lambda rid: (counts[rid], seated_by_room[rid]),
+            )
+            room_full = assigned_by_room[(duty["slot_id"], best)] >= required_by_room[
+                (duty["slot_id"], best)
+            ]
+            if counts[best] > counts[duty["room_id"]] and not room_full:
+                self.fail(
+                    f"{duty['instructor']} own-subject duty in "
+                    f"{duty['room_id']} instead of the max-student room {best} "
+                    f"({duty['slot_id']})."
+                )
+            checked += 1
+        self.assertGreater(checked, 0, "Expected own-subject hall duties to check.")
+
+    def test_largest_cohorts_seated_in_largest_halls(self):
+        """Room 26 / Room 18 (the biggest halls) hold the biggest cohorts."""
+        main.generate_datesheet_endpoint()
+        slots = sorted({e["slot_id"] for e in main.datesheet_state["datesheet"]})
+        checked = 0
+        for slot_id in slots:
+            plan = main._resolve_seating_plan(slot_id)
+            halls = [
+                r for r in plan["rooms"]
+                if r.get("room_type") != "lab"
+                and "Lab" not in r.get("room_name", "")
+                and r.get("seated", 0) > 0
+            ]
+            if len(halls) < 2:
+                continue
+            biggest = max(halls, key=lambda r: r["seated"])
+            self.assertIn(
+                biggest["room_name"], {"Room 26", "Room 18"},
+                f"Slot {slot_id}: largest hall cohort seated in "
+                f"{biggest['room_name']} instead of Room 26/18.",
+            )
+            checked += 1
+        self.assertGreater(checked, 0)
 
 
 if __name__ == "__main__":

@@ -804,7 +804,13 @@ def _build_hall_seating_plan(
     active_sbr: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Generates hall seating plan with strict 2-paper alternation across columns."""
-    all_rooms = list(rooms)
+    # Room 26 / Room 18 (the largest halls) are always offered first so the
+    # biggest cohorts — and therefore their course teachers — are seated in
+    # the rooms with the most seats, per the own-paper seating ruling.
+    all_rooms = sorted(
+        list(rooms),
+        key=lambda r: (-r.get("capacity", 0), str(r.get("name", ""))),
+    )
     course_instructor_map = {c["code"]: c.get("instructor", "") for c in slot_courses}
 
     non_empty_courses = [c for c in slot_courses if c.get("student_roll_numbers")]

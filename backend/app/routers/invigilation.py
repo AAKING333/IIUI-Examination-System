@@ -3,17 +3,25 @@ from typing import Optional
 
 from fastapi import APIRouter, Query, status
 
-from app.schemas.invigilation import DutyCreateIn, DutyGenerationIn, DutyUpdateIn
+from app.schemas.invigilation import (
+    DutyCreateIn,
+    DutyGenerationIn,
+    DutyUpdateIn,
+    FacultyPolicyIn,
+)
 from app.services.invigilation_service import (
     create_manual_duty,
+    delete_faculty_policy,
     delete_manual_duty,
     generate_duties,
     get_faculty_workload,
     get_roster_summary,
     get_slot_requirements,
     list_duties,
+    list_faculty_policy,
     recalculate_duties,
     update_manual_duty,
+    upsert_faculty_policy,
 )
 
 router = APIRouter(prefix="/api/invigilation", tags=["Invigilation Management"])
@@ -90,3 +98,21 @@ def replace_invigilation_duty(duty_id: str, payload: DutyUpdateIn):
 def delete_invigilation_duty(duty_id: str):
     """Deletes a duty only when its room remains fully staffed."""
     return delete_manual_duty(duty_id)
+
+
+@router.get("/faculty-policy")
+def get_faculty_policy():
+    """Lists every faculty member with their effective role and duty cap."""
+    return list_faculty_policy()
+
+
+@router.post("/faculty-policy")
+def save_faculty_policy(payload: FacultyPolicyIn):
+    """Adds a teacher or updates a role / max-duty override, then flags recalc."""
+    return upsert_faculty_policy(payload.model_dump())
+
+
+@router.delete("/faculty-policy/{instructor}")
+def remove_faculty_policy(instructor: str):
+    """Removes an override (and admin-added teachers) from the roster policy."""
+    return delete_faculty_policy(instructor)

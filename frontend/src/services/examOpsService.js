@@ -33,6 +33,12 @@ export const examOpsService = {
   updateDuty: (id, data) => http.patch(`/invigilation/duties/${encodeURIComponent(id)}`, data),
   deleteDuty: (id) => http.delete(`/invigilation/duties/${encodeURIComponent(id)}`),
 
+  // Faculty policy (roles, duty caps, admin-added teachers)
+  getFacultyPolicy: () => http.get('/invigilation/faculty-policy'),
+  saveFacultyPolicy: (data) => http.post('/invigilation/faculty-policy', data),
+  deleteFacultyPolicy: (instructor) =>
+    http.delete(`/invigilation/faculty-policy/${encodeURIComponent(instructor)}`),
+
   // UMC Reports
   getUMCReports: (params = {}) => {
     const qs = new URLSearchParams(params).toString();

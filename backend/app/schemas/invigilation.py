@@ -22,3 +22,10 @@ class DutyUpdateIn(BaseModel):
     instructor: Optional[str] = None
     status: Optional[str] = None
     notes: Optional[str] = None
+
+
+class FacultyPolicyIn(BaseModel):
+    instructor: str = Field(min_length=1)
+    role: str = "regular"
+    max_extra_duties: Optional[int] = Field(default=None, ge=0, le=20)
+    notes: str = ""

@@ -1211,7 +1211,7 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                 <div
                   style={{
                     position: 'absolute',
-                    right: 0,
+                    left: 0,
                     top: 'calc(100% + 8px)',
                     width: '380px',
                     maxHeight: '440px',

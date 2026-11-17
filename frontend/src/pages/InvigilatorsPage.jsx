@@ -5,6 +5,22 @@ import { formatTimeRange12 } from '../utils/timeFormat.js';
 
 const DUTY_STATUS_OPTIONS = ['assigned', 'confirmed', 'completed', 'absent'];
 
+// Faculty roles (admin-manageable).  Labels describe what the algorithm may
+// assign to a teacher holding that role.
+const FACULTY_ROLE_OPTIONS = [
+  { value: 'regular', label: 'Regular — duty pool' },
+  { value: 'ecr', label: 'ECR — relief rotation' },
+  { value: 'ecl', label: 'ECL — own exams only' },
+  { value: 'chairman', label: 'Chairman/HOD — own exam only' },
+  { value: 'senior', label: 'Most Senior — max 2, dire need' },
+  { value: 'visiting', label: 'Visiting — own exam only' },
+  { value: 'no_duty', label: 'No Duty — visits only' },
+];
+
+const FACULTY_ROLE_LABELS = Object.fromEntries(
+  FACULTY_ROLE_OPTIONS.map((r) => [r.value, r.label.split(' — ')[0]])
+);
+
 const EMPTY_ADD_DUTY = {
   slot_id: '',
   room_id: '',
@@ -46,6 +62,17 @@ export default function InvigilatorsPage({
   const [addDutyOpen, setAddDutyOpen] = useState(false);
   const [addDutyForm, setAddDutyForm] = useState(EMPTY_ADD_DUTY);
   const [isSavingDuty, setIsSavingDuty] = useState(false);
+
+  // Manage Faculty (policy) modal state
+  const [manageOpen, setManageOpen] = useState(false);
+  const [policyRows, setPolicyRows] = useState([]);
+  const [policyLoading, setPolicyLoading] = useState(false);
+  const [savingPolicy, setSavingPolicy] = useState('');
+  const [addFacultyForm, setAddFacultyForm] = useState({
+    instructor: '',
+    role: 'regular',
+    max_extra_duties: '',
+  });
 
   // Load roster data from backend
   const loadRoster = useCallback(async () => {
@@ -179,6 +206,125 @@ export default function InvigilatorsPage({
     }
   };
 
+  // ------------------------------------------------------------------
+  // Manage Faculty (roles, duty caps, admin-added teachers)
+  // ------------------------------------------------------------------
+  const refreshPolicyRows = useCallback(async () => {
+    const rows = await examOpsService.getFacultyPolicy();
+    return (Array.isArray(rows) ? rows : []).map((row) => ({
+      ...row,
+      max_extra_duties_input:
+        row.max_extra_duties_override === null || row.max_extra_duties_override === undefined
+          ? ''
+          : String(row.max_extra_duties_override),
+      _dirty: false,
+    }));
+  }, []);
+
+  const handleOpenManageFaculty = useCallback(async () => {
+    setManageOpen(true);
+    setPolicyLoading(true);
+    try {
+      setPolicyRows(await refreshPolicyRows());
+    } catch (err) {
+      showBanner?.(`Could not load faculty policy: ${err.message}`, 'danger');
+    } finally {
+      setPolicyLoading(false);
+    }
+  }, [refreshPolicyRows, showBanner]);
+
+  const updatePolicyRow = useCallback((instructor, field, value) => {
+    setPolicyRows((rows) =>
+      rows.map((row) =>
+        row.instructor === instructor ? { ...row, [field]: value, _dirty: true } : row
+      )
+    );
+  }, []);
+
+  const handleSavePolicyRow = useCallback(
+    async (row) => {
+      setSavingPolicy(row.instructor);
+      try {
+        await examOpsService.saveFacultyPolicy({
+          instructor: row.instructor,
+          role: row.role,
+          max_extra_duties:
+            row.max_extra_duties_input === '' ? null : Number(row.max_extra_duties_input),
+        });
+        setPolicyRows(await refreshPolicyRows());
+        await loadRoster();
+        showBanner?.(
+          `Saved policy for ${row.instructor}. Recalculate the roster to redesign duties.`,
+          'success'
+        );
+      } catch (err) {
+        showBanner?.(`Could not save policy: ${err.message}`, 'danger');
+      } finally {
+        setSavingPolicy('');
+      }
+    },
+    [refreshPolicyRows, loadRoster, showBanner]
+  );
+
+  const handleAddFaculty = useCallback(
+    async (e) => {
+      e.preventDefault();
+      const name = addFacultyForm.instructor.trim();
+      if (!name) return;
+      setSavingPolicy('__add__');
+      try {
+        await examOpsService.saveFacultyPolicy({
+          instructor: name,
+          role: addFacultyForm.role,
+          max_extra_duties:
+            addFacultyForm.max_extra_duties === ''
+              ? null
+              : Number(addFacultyForm.max_extra_duties),
+        });
+        setAddFacultyForm({ instructor: '', role: 'regular', max_extra_duties: '' });
+        setPolicyRows(await refreshPolicyRows());
+        await loadRoster();
+        showBanner?.(`${name} added to the faculty roster. Recalculating duties...`, 'success');
+        // The algorithm redesigns the roster so the new teacher is used.
+        await handleRecalculate();
+      } catch (err) {
+        showBanner?.(`Could not add teacher: ${err.message}`, 'danger');
+      } finally {
+        setSavingPolicy('');
+      }
+    },
+    [addFacultyForm, refreshPolicyRows, loadRoster, showBanner, handleRecalculate]
+  );
+
+  const handleDeletePolicy = useCallback(
+    async (row) => {
+      const isAdded = row.source === 'policy';
+      const ok = window.confirm(
+        isAdded
+          ? `Remove ${row.instructor} from the faculty roster entirely?`
+          : `Reset ${row.instructor} to the default departmental role rules?`
+      );
+      if (!ok) return;
+      setSavingPolicy(row.instructor);
+      try {
+        await examOpsService.deleteFacultyPolicy(row.instructor);
+        setPolicyRows(await refreshPolicyRows());
+        await loadRoster();
+        showBanner?.(
+          isAdded
+            ? `${row.instructor} removed from the roster.`
+            : `${row.instructor} reset to default rules. Recalculate to apply.`,
+          'success'
+        );
+      } catch (err) {
+        showBanner?.(`Could not remove policy: ${err.message}`, 'danger');
+      } finally {
+        setSavingPolicy('');
+      }
+    },
+    [refreshPolicyRows, loadRoster, showBanner]
+  );
+
   // Filtered duties
   const filteredDuties = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -228,11 +374,23 @@ export default function InvigilatorsPage({
             extra_duties: 0,
             own_subject_duties: 0,
             remaining_extra_capacity: extraDutyCap,
+            faculty_role: 'regular',
             is_ecr: false,
+            is_ecl: false,
+            is_no_duty: false,
           }
       );
     }
-    return facultyWorkload.filter((m) => !m.is_ecr && !usedInSlot.has(m.name));
+    // ECR members are relief staff and may be posted into a hall; ECL,
+    // Chairman/HOD, visiting, and no-duty roles may only cover own exams.
+    return facultyWorkload.filter(
+      (m) =>
+        !m.is_ecl &&
+        !m.is_no_duty &&
+        !m.is_chairman &&
+        !m.is_visiting &&
+        !usedInSlot.has(m.name)
+    );
   }, [addDutyForm.slot_id, addRoomContext, duties, facultyWorkload, extraDutyCap]);
 
   // Candidate instructors for edit modal
@@ -243,7 +401,9 @@ export default function InvigilatorsPage({
     );
     const usedInSlot = new Set(slotDuties.map((d) => d.instructor));
     return facultyWorkload.filter(
-      (m) => (!m.is_ecr && !usedInSlot.has(m.name)) || m.name === editDuty.instructor
+      (m) =>
+        ((!m.is_ecl && !m.is_no_duty && !m.is_chairman && !m.is_visiting && !usedInSlot.has(m.name)) ||
+          m.name === editDuty.instructor)
     );
   }, [duties, editDuty, facultyWorkload]);
 
@@ -294,6 +454,16 @@ export default function InvigilatorsPage({
             style={{ fontSize: '0.84rem' }}
           >
             + Assign Duty
+          </button>
+
+          <button
+            type="button"
+            className="btn btn--outline"
+            onClick={handleOpenManageFaculty}
+            style={{ fontSize: '0.84rem' }}
+            title="Add teachers, set roles, and assign maximum duty limits."
+          >
+            Manage Faculty
           </button>
 
           <button
@@ -393,7 +563,9 @@ export default function InvigilatorsPage({
             {errorCount > 0 ? `${errorCount} Issues` : '100% Compliant'}
           </div>
           <div style={{ fontSize: '0.76rem', color: 'var(--itms-text-muted)', marginTop: 2 }}>
-            {stats.ecr_exempt_count || 0} ECR staff exempt &bull; Zero clashes
+            {stats.ecr_count || 0} ECR &bull; {stats.ecl_count || 0} ECL &bull;{' '}
+            {stats.chairman_count || 0} Chairman &bull; {stats.senior_role_count || 0} dire-need
+            seniors &bull; Zero clashes
           </div>
         </div>
       </div>
@@ -499,6 +671,7 @@ export default function InvigilatorsPage({
               >
                 <option value="">All Duty Types</option>
                 <option value="own_subject">Own Subject (Exempt)</option>
+                <option value="ecr_rotation">ECR Rotation (Relief)</option>
                 <option value="extra">Extra Duty (Counted)</option>
               </select>
 
@@ -573,6 +746,7 @@ export default function InvigilatorsPage({
                   </tr>
                 ) : filteredDuties.map((duty) => {
                   const isOwn = duty.duty_type === 'own_subject';
+                  const isEcrRotation = duty.duty_type === 'ecr_rotation';
                   const isManual = duty.source === 'manual';
                   return (
                     <tr key={duty.id}>
@@ -607,14 +781,34 @@ export default function InvigilatorsPage({
                           {duty.instructor}
                         </div>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
-                          {duty.is_ecr_exempt && (
+                          {duty.is_ecr && (
                             <span style={{ fontSize: '0.7rem', color: '#0369a1', background: '#e0f2fe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
                               ECR
                             </span>
                           )}
+                          {duty.is_ecl && (
+                            <span style={{ fontSize: '0.7rem', color: '#6d28d9', background: '#ede9fe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                              ECL
+                            </span>
+                          )}
+                          {duty.is_chairman && (
+                            <span style={{ fontSize: '0.7rem', color: '#1e40af', background: '#dbeafe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                              Chairman/HOD
+                            </span>
+                          )}
+                          {duty.is_visiting && (
+                            <span style={{ fontSize: '0.7rem', color: '#0f766e', background: '#ccfbf1', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                              Visiting
+                            </span>
+                          )}
+                          {duty.is_no_duty && (
+                            <span style={{ fontSize: '0.7rem', color: '#9a3412', background: '#ffedd5', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                              No-Duty
+                            </span>
+                          )}
                           {duty.is_senior && (
                             <span style={{ fontSize: '0.7rem', color: '#92400e', background: '#fef3c7', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              Senior
+                              {duty.is_senior_role ? 'Senior (Max 2)' : 'Senior'}
                             </span>
                           )}
                           {duty.notes && (
@@ -632,12 +826,16 @@ export default function InvigilatorsPage({
                             borderRadius: '9999px',
                             fontSize: '0.73rem',
                             fontWeight: 600,
-                            background: isOwn ? '#f0fdf4' : '#eff6ff',
-                            color: isOwn ? '#15803d' : '#1d4ed8',
-                            border: `1px solid ${isOwn ? '#bbf7d0' : '#bfdbfe'}`,
+                            background: isOwn
+                              ? '#f0fdf4'
+                              : isEcrRotation
+                                ? '#e0f2fe'
+                                : '#eff6ff',
+                            color: isOwn ? '#15803d' : isEcrRotation ? '#0369a1' : '#1d4ed8',
+                            border: `1px solid ${isOwn ? '#bbf7d0' : isEcrRotation ? '#bae6fd' : '#bfdbfe'}`,
                           }}
                         >
-                          {isOwn ? 'Own Subject' : 'Extra Duty'}
+                          {isOwn ? 'Own Subject' : isEcrRotation ? 'ECR Rotation' : 'Extra Duty'}
                         </span>
                       </td>
                       <td>
@@ -890,53 +1088,109 @@ export default function InvigilatorsPage({
                 <tr>
                   <th>Faculty Member</th>
                   <th>Assigned Courses</th>
-                  <th style={{ width: 110 }}>Extra Duties</th>
-                  <th style={{ width: 110 }}>Own Subject</th>
+                  <th style={{ width: 100 }}>Extra Duties</th>
+                  <th style={{ width: 90 }}>Own Subject</th>
+                  <th style={{ width: 80 }}>ECR Rot.</th>
                   <th style={{ width: 90 }}>Total</th>
-                  <th style={{ width: 130 }}>Quota Capacity</th>
-                  <th style={{ width: 130 }}>Status</th>
+                  <th style={{ width: 150 }}>Quota Capacity</th>
+                  <th style={{ width: 140 }}>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredFaculty.map((member) => (
-                  <tr key={member.name}>
-                    <td style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>
-                      {member.name}
-                    </td>
-                    <td style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)', maxWidth: 260 }}>
-                      {member.courses?.length ? member.courses.join(', ') : '—'}
-                    </td>
-                    <td style={{ fontWeight: 700 }}>{member.extra_duties}</td>
-                    <td>{member.own_subject_duties}</td>
-                    <td style={{ fontWeight: 700, color: 'var(--iiui-navy)' }}>{member.total_duties}</td>
-                    <td>
-                      {member.is_ecr ? (
-                        <span style={{ fontSize: '0.74rem', color: '#0369a1', fontWeight: 600 }}>
-                          ECR Exempt
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>
-                          {member.remaining_extra_capacity} of {extraDutyCap} left
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      {member.is_ecr ? (
-                        <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
-                          ECR Operational
-                        </span>
-                      ) : member.extra_duties >= extraDutyCap ? (
-                        <span style={{ fontSize: '0.72rem', background: '#fef2f2', color: '#b91c1c', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
-                          Cap Reached
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: '0.72rem', background: '#f0fdf4', color: '#15803d', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
-                          Eligible
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {filteredFaculty.map((member) => {
+                  const maxDuties = member.max_duties ?? extraDutyCap;
+                  const capReached =
+                    member.is_no_duty ||
+                    member.is_ecl ||
+                    member.is_chairman ||
+                    member.is_visiting ||
+                    member.extra_duties >= maxDuties;
+                  return (
+                    <tr key={member.name}>
+                      <td>
+                        <div style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>{member.name}</div>
+                        {member.faculty_role && member.faculty_role !== 'regular' && (
+                          <div style={{ fontSize: '0.7rem', color: 'var(--itms-text-muted)', marginTop: 1 }}>
+                            {FACULTY_ROLE_LABELS[member.faculty_role] || member.faculty_role}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)', maxWidth: 260 }}>
+                        {member.courses?.length ? member.courses.join(', ') : '—'}
+                      </td>
+                      <td style={{ fontWeight: 700 }}>{member.extra_duties}</td>
+                      <td>{member.own_subject_duties}</td>
+                      <td>{member.ecr_rotation_duties || 0}</td>
+                      <td style={{ fontWeight: 700, color: 'var(--iiui-navy)' }}>{member.total_duties}</td>
+                      <td>
+                        {member.is_no_duty ? (
+                          <span style={{ fontSize: '0.74rem', color: '#9a3412', fontWeight: 600 }}>
+                            No-Duty Role
+                          </span>
+                        ) : member.is_ecl ? (
+                          <span style={{ fontSize: '0.74rem', color: '#6d28d9', fontWeight: 600 }}>
+                            Own Exams Only
+                          </span>
+                        ) : member.is_chairman ? (
+                          <span style={{ fontSize: '0.74rem', color: '#1e40af', fontWeight: 600 }}>
+                            Own Exam Only (HOD)
+                          </span>
+                        ) : member.is_visiting ? (
+                          <span style={{ fontSize: '0.74rem', color: '#0f766e', fontWeight: 600 }}>
+                            Own Exam Only
+                          </span>
+                        ) : member.is_ecr ? (
+                          <span style={{ fontSize: '0.74rem', color: '#0369a1', fontWeight: 600 }}>
+                            ECR Rotation
+                          </span>
+                        ) : member.is_senior_role ? (
+                          <span style={{ fontSize: '0.74rem', color: '#92400e', fontWeight: 600 }}>
+                            Max 2 Extra (Dire Need)
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>
+                            {member.remaining_extra_capacity} of {maxDuties} left
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {member.is_no_duty ? (
+                          <span style={{ fontSize: '0.72rem', background: '#ffedd5', color: '#9a3412', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            No Duty Assigned
+                          </span>
+                        ) : member.is_ecl ? (
+                          <span style={{ fontSize: '0.72rem', background: '#ede9fe', color: '#6d28d9', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            ECL &mdash; Own Exams Only
+                          </span>
+                        ) : member.is_chairman ? (
+                          <span style={{ fontSize: '0.72rem', background: '#dbeafe', color: '#1e40af', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            Chairman &mdash; Own Exam
+                          </span>
+                        ) : member.is_visiting ? (
+                          <span style={{ fontSize: '0.72rem', background: '#ccfbf1', color: '#0f766e', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            Visiting &mdash; Own Exam
+                          </span>
+                        ) : member.is_ecr ? (
+                          <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            ECR Rotation Staff
+                          </span>
+                        ) : member.is_senior_role ? (
+                          <span style={{ fontSize: '0.72rem', background: '#fef3c7', color: '#92400e', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            Dire-Need Senior
+                          </span>
+                        ) : capReached ? (
+                          <span style={{ fontSize: '0.72rem', background: '#fef2f2', color: '#b91c1c', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            Cap Reached
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.72rem', background: '#f0fdf4', color: '#15803d', padding: '2px 7px', borderRadius: 4, fontWeight: 600 }}>
+                            Eligible
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -961,9 +1215,12 @@ export default function InvigilatorsPage({
               <div style={{ fontWeight: 700, fontSize: '1.05rem', color: '#15803d' }}>
                 All Invigilation Policy Rules Satisfied
               </div>
-              <p style={{ margin: '0.5rem auto 0', color: 'var(--itms-text-muted)', fontSize: '0.84rem', maxWidth: 500 }}>
-                The active duty roster adheres strictly to the 4-duty extra quota cap, room staffing ratios,
-                ECR committee exemptions, and practical course teacher lab ownership.
+              <p style={{ margin: '0.5rem auto 0', color: 'var(--itms-text-muted)', fontSize: '0.84rem', maxWidth: 560 }}>
+                The active duty roster adheres strictly to room staffing ratios, the ECR relief
+                rotation (one ECR teacher per slot, skipped for own papers), the Chairman/HOD
+                own-exam-only rule, the two-extra-duty dire-need limit for the most-senior faculty,
+                ECL and visiting own-exam-only exemptions, faculty policy caps, and practical
+                course teacher lab ownership.
               </p>
             </div>
           ) : (
@@ -1100,7 +1357,7 @@ export default function InvigilatorsPage({
               <option value="">Select Faculty Member</option>
               {addCandidates.map((m) => (
                 <option key={m.name} value={m.name}>
-                  {m.name} ({m.extra_duties}/{extraDutyCap} extra duties)
+                  {m.name} ({m.extra_duties}/{m.max_duties ?? extraDutyCap} extra duties)
                 </option>
               ))}
             </select>
@@ -1187,7 +1444,7 @@ export default function InvigilatorsPage({
               >
                 {editCandidates.map((m) => (
                   <option key={m.name} value={m.name}>
-                    {m.name} ({m.extra_duties}/{extraDutyCap} extra duties)
+                    {m.name} ({m.extra_duties}/{m.max_duties ?? extraDutyCap} extra duties)
                   </option>
                 ))}
               </select>
@@ -1220,6 +1477,225 @@ export default function InvigilatorsPage({
             </label>
           </form>
         )}
+      </Modal>
+
+      {/* Manage Faculty Modal (admin policy: add teachers, roles, duty caps) */}
+      <Modal
+        isOpen={manageOpen}
+        title="Manage Faculty"
+        onClose={() => setManageOpen(false)}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={() => setManageOpen(false)}
+              disabled={Boolean(savingPolicy)}
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={async () => {
+                setManageOpen(false);
+                await handleRecalculate();
+              }}
+              disabled={Boolean(savingPolicy) || isRecalculating || !isDatesheetPublished}
+            >
+              {isRecalculating ? 'Recalculating...' : 'Recalculate Roster'}
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+          <div
+            style={{
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: '6px',
+              padding: '0.65rem 0.85rem',
+              fontSize: '0.8rem',
+              color: 'var(--itms-text-muted)',
+            }}
+          >
+            Roles drive the duty algorithm: <strong>Regular</strong> teachers carry up to 4 extra
+            duties; <strong>ECR</strong> members rotate one relief duty per exam slot;{' '}
+            <strong>ECL / Visiting / Chairman</strong> cover only their own exams; the{' '}
+            <strong>most-senior</strong> teachers get at most 2 extra duties and only in dire need.
+            &ldquo;Max duties&rdquo; overrides the default cap per teacher (leave empty for the
+            default).
+          </div>
+
+          {/* Add teacher form */}
+          <form
+            onSubmit={handleAddFaculty}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '2fr 1.4fr 0.8fr auto',
+              gap: '0.5rem',
+              alignItems: 'end',
+            }}
+          >
+            <label className="form-label" style={{ margin: 0 }}>
+              Add Teacher
+              <input
+                type="text"
+                className="form-control"
+                placeholder="e.g. Dr. New Faculty Member"
+                value={addFacultyForm.instructor}
+                onChange={(e) => setAddFacultyForm({ ...addFacultyForm, instructor: e.target.value })}
+                required
+              />
+            </label>
+            <label className="form-label" style={{ margin: 0 }}>
+              Role
+              <select
+                className="form-control"
+                value={addFacultyForm.role}
+                onChange={(e) => setAddFacultyForm({ ...addFacultyForm, role: e.target.value })}
+              >
+                {FACULTY_ROLE_OPTIONS.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="form-label" style={{ margin: 0 }}>
+              Max Duties
+              <input
+                type="number"
+                min={0}
+                max={20}
+                className="form-control"
+                placeholder="Default"
+                value={addFacultyForm.max_extra_duties}
+                onChange={(e) =>
+                  setAddFacultyForm({ ...addFacultyForm, max_extra_duties: e.target.value })
+                }
+              />
+            </label>
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={Boolean(savingPolicy)}
+            >
+              {savingPolicy === '__add__' ? 'Adding...' : '+ Add Teacher'}
+            </button>
+          </form>
+
+          {/* Policy table */}
+          <div className="card-table-wrapper" style={{ maxHeight: '46vh', overflowY: 'auto' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 180 }}>Faculty Member</th>
+                  <th style={{ width: 190 }}>Role</th>
+                  <th style={{ width: 110 }}>Max Duties</th>
+                  <th style={{ width: 140, textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {policyLoading ? (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--itms-text-muted)' }}>
+                      Loading faculty...
+                    </td>
+                  </tr>
+                ) : policyRows.map((row) => (
+                  <tr key={row.instructor}>
+                    <td>
+                      <div style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>
+                        {row.instructor}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)' }}>
+                        {row.courses?.length ? row.courses.join(', ') : 'No course assignment'}
+                        {row.source === 'policy' && (
+                          <span
+                            style={{
+                              marginLeft: 6,
+                              fontSize: '0.68rem',
+                              background: '#ecfdf5',
+                              color: '#047857',
+                              padding: '1px 5px',
+                              borderRadius: 4,
+                              fontWeight: 600,
+                            }}
+                          >
+                            Admin-added
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <select
+                        className="form-control"
+                        style={{ padding: '4px 7px', fontSize: '0.8rem' }}
+                        value={row.role}
+                        onChange={(e) => updatePolicyRow(row.instructor, 'role', e.target.value)}
+                      >
+                        {FACULTY_ROLE_OPTIONS.map((r) => (
+                          <option key={r.value} value={r.value}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min={0}
+                        max={20}
+                        className="form-control"
+                        style={{ padding: '4px 7px', fontSize: '0.8rem' }}
+                        placeholder="Default"
+                        value={row.max_extra_duties_input}
+                        onChange={(e) =>
+                          updatePolicyRow(row.instructor, 'max_extra_duties_input', e.target.value)
+                        }
+                      />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--primary"
+                          disabled={!row._dirty || Boolean(savingPolicy)}
+                          onClick={() => handleSavePolicyRow(row)}
+                          style={{ padding: '2px 8px', fontSize: '0.76rem' }}
+                        >
+                          {savingPolicy === row.instructor ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--outline"
+                          disabled={Boolean(savingPolicy)}
+                          onClick={() => handleDeletePolicy(row)}
+                          style={{ padding: '2px 8px', fontSize: '0.76rem', color: 'var(--itms-danger)', borderColor: '#fecaca' }}
+                          title={
+                            row.source === 'policy'
+                              ? 'Remove this admin-added teacher entirely'
+                              : 'Reset to the default departmental role rules'
+                          }
+                        >
+                          {row.source === 'policy' ? 'Remove' : 'Reset'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!policyLoading && policyRows.length === 0 && (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--itms-text-muted)' }}>
+                      No faculty found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </Modal>
     </div>
   );

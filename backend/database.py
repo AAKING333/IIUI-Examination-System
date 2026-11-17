@@ -130,6 +130,13 @@ class SQLiteDatabase:
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS faculty_policy (
+                    instructor_name TEXT PRIMARY KEY,
+                    role TEXT NOT NULL DEFAULT 'regular',
+                    max_extra_duties INTEGER,
+                    notes TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
             """)
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(umc_reports)")
@@ -449,6 +456,54 @@ class SQLiteDatabase:
         with self.connect() as connection:
             cursor = connection.execute("DELETE FROM invigilation_duties")
             return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Faculty policy (admin-managed roles / duty caps / added faculty)
+    # ------------------------------------------------------------------
+
+    def get_faculty_policy(self, instructor_name: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM faculty_policy WHERE instructor_name = ?",
+                (instructor_name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_faculty_policy(self) -> List[Dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM faculty_policy ORDER BY instructor_name"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_faculty_policy(self, policy: Dict[str, Any]) -> Dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO faculty_policy "
+                "(instructor_name, role, max_extra_duties, notes, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(instructor_name) DO UPDATE SET "
+                "role = excluded.role, "
+                "max_extra_duties = excluded.max_extra_duties, "
+                "notes = excluded.notes, "
+                "updated_at = excluded.updated_at",
+                (
+                    policy["instructor_name"],
+                    policy.get("role", "regular"),
+                    policy.get("max_extra_duties"),
+                    policy.get("notes", ""),
+                    policy["updated_at"],
+                ),
+            )
+        return self.get_faculty_policy(policy["instructor_name"])
+
+    def delete_faculty_policy(self, instructor_name: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM faculty_policy WHERE instructor_name = ?",
+                (instructor_name,),
+            )
+            return cursor.rowcount > 0
 
     def create_umc_report(self, report: Dict[str, Any], timestamp: str) -> Dict[str, Any]:
         with self.connect() as connection:
