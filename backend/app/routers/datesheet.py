@@ -1,5 +1,5 @@
 """Datesheet Generation, Inspection, and Export routes."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from database import database
@@ -14,9 +14,9 @@ router = APIRouter(prefix="/api/datesheet", tags=["Datesheet Management"])
 
 
 @router.post("/generate")
-def generate_datesheet_endpoint():
+def generate_datesheet_endpoint(lab_mode: str = Query("separate_days", description="Lab scheduling mode: separate_days, separate_week, or concurrent")):
     """Generates the clash-free exam schedule and synchronizes active room allocations."""
-    return generate_datesheet_schedule()
+    return generate_datesheet_schedule(lab_mode=lab_mode)
 
 
 @router.get("")

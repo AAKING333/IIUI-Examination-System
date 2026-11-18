@@ -86,6 +86,7 @@ def generate_datesheet(
     courses: Optional[List[Dict[str, Any]]] = None,
     rooms: Optional[List[Dict[str, Any]]] = None,
     max_courses_per_slot: int = 2,
+    lab_mode: str = "separate_days",
 ) -> Dict[str, Any]:
     active_slots = time_slots if time_slots is not None else store.get_time_slots()
     active_courses = courses if courses is not None else store.get_courses()
@@ -100,10 +101,23 @@ def generate_datesheet(
         sum(room["capacity"] for room in room_groups[False]),
         sum(room["capacity"] for room in room_groups[True]),
     )
+    MAX_STUDENTS_PER_SLOT = 270  # PRD v3.0 NR-11 confirmed ceiling
+
+    def is_morning(s: Dict[str, Any]) -> bool:
+        try:
+            return int(s.get("start_time", "08:00").split(":")[0]) < 12
+        except Exception:
+            return True
+
+    def is_evening(s: Dict[str, Any]) -> bool:
+        return not is_morning(s)
+
     # student -> set of slot ids already used
     student_slots = {}
     # student -> set of dates on which they already have a REGULAR paper
     student_regular_days = {}
+    # student -> list of dicts for NR-03 Evening-to-Morning tracking
+    student_regular_papers = defaultdict(list)
     # student -> {date: number of papers that day}
     student_day_count = {}
     # teacher -> set of slot ids already scheduled (faculty clash guard)
@@ -127,6 +141,17 @@ def generate_datesheet(
             written_groups[u["code"]].append(u)
 
     sorted_slots = sorted(active_slots, key=lambda s: (s["date"], s["start_time"]))
+    distinct_dates = sorted(list(set(s["date"] for s in sorted_slots)))
+    
+    # NR-04 Lab scheduling mode: dedicated lab days segregation
+    if lab_mode in ("separate_days", "separate_week"):
+        lab_dates_count = 3 if len(distinct_dates) >= 9 else (2 if len(distinct_dates) >= 7 else 1)
+        lab_dates = set(distinct_dates[-lab_dates_count:])
+        theory_dates = set(distinct_dates) - lab_dates
+    else:
+        lab_dates = set(distinct_dates)
+        theory_dates = set(distinct_dates)
+
     slot_courses_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
     # Large courses (>145 students across BSCS & BSIT) and Small courses (<=145 students)
@@ -147,13 +172,16 @@ def generate_datesheet(
     teacher_courses = defaultdict(dict)  # teacher -> {slot_id: course_code}
 
     def can_place_written_course(code: str, slot: Dict[str, Any]) -> bool:
+        if lab_mode in ("separate_days", "separate_week") and slot["date"] in lab_dates:
+            return False
+
         units = written_groups[code]
         rolls = [r for u in units for r in u["student_roll_numbers"]]
         total_rolls = len(rolls)
 
         current_units = [u for u in slot_courses_map[slot["id"]] if not u.get("is_lab")]
         current_rolls = sum(len(u["student_roll_numbers"]) for u in current_units)
-        if current_rolls + total_rolls > hall_cap:
+        if current_rolls + total_rolls > min(hall_cap, MAX_STUDENTS_PER_SLOT):
             return False
 
         current_codes = set(u["code"] for u in current_units)
@@ -166,6 +194,16 @@ def generate_datesheet(
                 if slot["id"] in teacher_courses[t]:
                     if teacher_courses[t][slot["id"]] != code:
                         return False
+
+        # NR-13 ECR Member Availability Guard: never all ECR members in the same slot
+        course_ecrs = {t for u in units for t in get_course_teachers(u) if any(m in t.lower() for m in ("jibran", "musharraf", "tariq sadad"))}
+        current_ecrs = {t for u in slot_courses_map[slot["id"]] for t in get_course_teachers(u) if any(m in t.lower() for m in ("jibran", "musharraf", "tariq sadad"))}
+        if len(current_ecrs | course_ecrs) >= 3:
+            return False
+
+        s_date = datetime.strptime(slot["date"], "%Y-%m-%d").date()
+        s_is_eve = is_evening(slot)
+        s_is_mor = is_morning(slot)
 
         for u in units:
             for r in u["student_roll_numbers"]:
@@ -180,11 +218,21 @@ def generate_datesheet(
                         allowed = (code in ("ISLAMIC1", "M101", "SE346")) or any(p["code"] in ("ISLAMIC1", "M101", "SE346") for p in day_regs)
                         if not allowed:
                             return False
+                    # NR-03: Evening-to-Morning Regular Paper Constraint
+                    for p in student_regular_papers.get(r, []):
+                        diff = (s_date - p["date"]).days
+                        if diff == 1 and s_is_mor and p["is_evening"]:
+                            return False
+                        if diff == -1 and s_is_eve and p["is_morning"]:
+                            return False
 
         return True
 
     def place_written_course(code: str, slot: Dict[str, Any]) -> None:
         units = written_groups[code]
+        s_date = datetime.strptime(slot["date"], "%Y-%m-%d").date()
+        s_is_eve = is_evening(slot)
+        s_is_mor = is_morning(slot)
         for u in units:
             rolls = u["student_roll_numbers"]
             datesheet.append({
@@ -218,6 +266,9 @@ def generate_datesheet(
                     student_regular_days.setdefault(r, {}).setdefault(slot["date"], []).append({
                         "code": code, "is_lab": False,
                     })
+                    student_regular_papers[r].append({
+                        "code": code, "date": s_date, "is_evening": s_is_eve, "is_morning": s_is_mor, "slot_id": slot["id"],
+                    })
         cohorts = {(u["program"], u["batch"]) for u in units if u.get("program") and u.get("batch")}
         for cohort in cohorts:
             batch_written_dates[cohort][slot["date"]] += 1
@@ -238,6 +289,7 @@ def generate_datesheet(
                 if enrolment_type(r, code) == "regular":
                     regs = student_regular_days.get(r, {}).get(slot["date"], [])
                     student_regular_days[r][slot["date"]] = [p for p in regs if p["code"] != code]
+                    student_regular_papers[r] = [p for p in student_regular_papers.get(r, []) if not (p["code"] == code and p["slot_id"] == slot["id"])]
         cohorts = {(u["program"], u["batch"]) for u in units if u.get("program") and u.get("batch")}
         for cohort in cohorts:
             if slot["date"] in batch_written_dates[cohort]:
@@ -345,14 +397,24 @@ def generate_datesheet(
         if used_lab_rooms + needed_labs_count(unit) > total_lab_rooms:
             return False
 
-        # Constraint: in any slot, total student count (written + lab) must not exceed ~330
+        # Constraint: in any slot, total student count (written + lab) must not exceed 270 (NR-11)
         total_slot_students = sum(len(u.get("student_roll_numbers", [])) for u in slot_courses_map[slot["id"]])
-        if total_slot_students + len(unit.get("student_roll_numbers", [])) > 330:
+        if total_slot_students + len(unit.get("student_roll_numbers", [])) > MAX_STUDENTS_PER_SLOT:
             return False
 
         for t in get_course_teachers(unit):
             if slot["id"] in teacher_courses[t]:
                 return False
+
+        # NR-13 ECR Member Availability Guard
+        course_ecrs = {t for t in get_course_teachers(unit) if any(m in t.lower() for m in ("jibran", "musharraf", "tariq sadad"))}
+        current_ecrs = {t for u in slot_courses_map[slot["id"]] for t in get_course_teachers(u) if any(m in t.lower() for m in ("jibran", "musharraf", "tariq sadad"))}
+        if len(current_ecrs | course_ecrs) >= 3:
+            return False
+
+        s_date = datetime.strptime(slot["date"], "%Y-%m-%d").date()
+        s_is_eve = is_evening(slot)
+        s_is_mor = is_morning(slot)
 
         for r in unit["student_roll_numbers"]:
             if slot["id"] in student_slots.get(r, set()):
@@ -364,11 +426,21 @@ def generate_datesheet(
                 day_labs = [p for p in student_regular_days.get(r, {}).get(slot["date"], []) if p["is_lab"]]
                 if day_labs:
                     return False
+                # NR-03 Evening-to-Morning
+                for p in student_regular_papers.get(r, []):
+                    diff = (s_date - p["date"]).days
+                    if diff == 1 and s_is_mor and p["is_evening"]:
+                        return False
+                    if diff == -1 and s_is_eve and p["is_morning"]:
+                        return False
 
         return True
 
     def place_lab_unit(unit: Dict[str, Any], slot: Dict[str, Any]) -> None:
         rolls = unit["student_roll_numbers"]
+        s_date = datetime.strptime(slot["date"], "%Y-%m-%d").date()
+        s_is_eve = is_evening(slot)
+        s_is_mor = is_morning(slot)
         datesheet.append({
             "course_code": unit["code"],
             "course_title": unit["title"],
@@ -400,13 +472,22 @@ def generate_datesheet(
                 student_regular_days.setdefault(r, {}).setdefault(slot["date"], []).append({
                     "code": unit["code"], "is_lab": True,
                 })
+                student_regular_papers[r].append({
+                    "code": unit["code"], "date": s_date, "is_evening": s_is_eve, "is_morning": s_is_mor, "slot_id": slot["id"],
+                })
+
+    # NR-04 Lab mode: prioritize dedicated lab dates first
+    if lab_mode in ("separate_days", "separate_week"):
+        ordered_lab_slots = [s for s in sorted_slots if s["date"] in lab_dates] + [s for s in sorted_slots if s["date"] not in lab_dates]
+    else:
+        ordered_lab_slots = sorted_slots
 
     remaining_labs = sorted(
         lab_units,
         key=lambda u: (u["code"], len(u["student_roll_numbers"])),
     )
     for unit in list(remaining_labs):
-        for slot in sorted_slots:
+        for slot in ordered_lab_slots:
             if can_place_lab_unit(unit, slot):
                 place_lab_unit(unit, slot)
                 remaining_labs.remove(unit)

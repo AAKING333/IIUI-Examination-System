@@ -13,14 +13,16 @@ from app.services.seating_service import sync_datesheet_rooms, resolve_seating_p
 logger = logging.getLogger("exam_portal.datesheet_service")
 
 
-def generate_datesheet_schedule() -> dict:
+def generate_datesheet_schedule(lab_mode: str = "separate_days") -> dict:
     """Solves timetable CSP, enriches rooms from seating solver, and publishes new datesheet."""
     global datesheet_state
     slots = store.get_time_slots()
     if not slots:
-        raise HTTPException(status_code=400, detail="Cannot generate datesheet: No time slots defined.")
+        raise HTTPException(status_code=400, detail="Validation Error: Cannot generate datesheet: No time slots defined.")
     if not store.get_courses():
-        raise HTTPException(status_code=400, detail="Cannot generate datesheet: No courses defined.")
+        raise HTTPException(status_code=400, detail="Validation Error: Cannot generate datesheet: No courses defined.")
+    if not store.get_rooms():
+        raise HTTPException(status_code=400, detail="Validation Error: Cannot generate datesheet: No examination rooms configured in the system.")
 
     schedulable_courses = [
         course for course in store.get_courses()
@@ -31,7 +33,7 @@ def generate_datesheet_schedule() -> dict:
             status_code=400,
             detail="Cannot generate datesheet: all courses have zero enrolled students.",
         )
-    result = generate_datesheet(slots, store.get_courses(), store.get_rooms())
+    result = generate_datesheet(slots, store.get_courses(), store.get_rooms(), lab_mode=lab_mode)
 
     if result.get("unplaced") and len(result["unplaced"]) > 0:
         unplaced_count = len(result["unplaced"])

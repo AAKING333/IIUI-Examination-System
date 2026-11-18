@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import Modal from '../components/Modal.jsx';
+import { extractErrorMessage } from '../services/apiClient.js';
 
 const PRESET_PROGRAMS = ['BSCS', 'BSIT', 'BSSE'];
 const PRESET_BATCHES = ['F24', 'F23', 'F22', 'F21'];
@@ -89,8 +90,50 @@ export default function InstructorAssignmentsPage({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.instructor.trim() || !formData.course_code.trim()) {
-      showBanner('Course and instructor name are required.', 'danger');
+    const instName = (formData.instructor || '').trim();
+    const cCode = (formData.course_code || '').trim().toUpperCase();
+    const prog = (formData.program || '').trim().toUpperCase();
+    const bat = (formData.batch || '').trim().toUpperCase();
+    const sec = (formData.section || '').trim().toUpperCase();
+
+    if (!cCode) {
+      showBanner('Validation Error: Course selection is required.', 'danger');
+      return;
+    }
+    if (!instName || instName.length < 2) {
+      showBanner('Validation Error: Instructor name must have at least 2 characters.', 'danger');
+      return;
+    }
+    if (!/[A-Za-z]/.test(instName)) {
+      showBanner('Validation Error: Instructor name must contain letters and cannot be purely numeric or symbols.', 'danger');
+      return;
+    }
+    if (!prog || prog.length < 2) {
+      showBanner('Validation Error: Degree program must be at least 2 characters (e.g. BSCS, BSIT).', 'danger');
+      return;
+    }
+    if (!bat || bat.length < 2) {
+      showBanner('Validation Error: Batch must be at least 2 characters (e.g. F23, S24).', 'danger');
+      return;
+    }
+    if (!sec) {
+      showBanner('Validation Error: Section is required (e.g. A, B).', 'danger');
+      return;
+    }
+
+    // Frontend duplicate check
+    const isDuplicate = assignments.some((a) => {
+      if (editingAssignment && a.id === editingAssignment.id) return false;
+      return (
+        a.program.toUpperCase() === prog &&
+        a.batch.toUpperCase() === bat &&
+        a.section.toUpperCase() === sec &&
+        a.course_code.toUpperCase() === cCode
+      );
+    });
+
+    if (isDuplicate) {
+      showBanner(`Validation Error: An instructor assignment already exists for ${prog} ${bat} Section ${sec} in course ${cCode}.`, 'danger');
       return;
     }
 
@@ -101,34 +144,40 @@ export default function InstructorAssignmentsPage({
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            program: formData.program.trim().toUpperCase(),
-            batch: formData.batch.trim().toUpperCase(),
-            section: formData.section.trim().toUpperCase(),
-            course_code: formData.course_code.trim().toUpperCase(),
-            instructor: formData.instructor.trim(),
+            program: prog,
+            batch: bat,
+            section: sec,
+            course_code: cCode,
+            instructor: instName,
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(errData, 'Failed to update assignment.'));
+        }
         showBanner('Instructor assignment updated successfully.', 'success');
       } else {
         const res = await fetch('/api/instructor-assignments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            program: formData.program.trim().toUpperCase(),
-            batch: formData.batch.trim().toUpperCase(),
-            section: formData.section.trim().toUpperCase(),
-            course_code: formData.course_code.trim().toUpperCase(),
-            instructor: formData.instructor.trim(),
+            program: prog,
+            batch: bat,
+            section: sec,
+            course_code: cCode,
+            instructor: instName,
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(errData, 'Failed to create assignment.'));
+        }
         showBanner('Instructor assigned successfully.', 'success');
       }
       setIsModalOpen(false);
       onRefresh();
     } catch (err) {
-      showBanner(`Operation failed: ${err.message}`, 'danger');
+      showBanner(err.message, 'danger');
     } finally {
       setIsSubmitting(false);
     }
@@ -138,12 +187,15 @@ export default function InstructorAssignmentsPage({
     setIsSubmitting(true);
     try {
       const res = await fetch(`/api/instructor-assignments/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(errData, 'Failed to delete assignment.'));
+      }
       showBanner('Instructor assignment removed.', 'success');
       setDeleteConfirm(null);
       onRefresh();
     } catch (err) {
-      showBanner(`Delete failed: ${err.message}`, 'danger');
+      showBanner(err.message, 'danger');
     } finally {
       setIsSubmitting(false);
     }

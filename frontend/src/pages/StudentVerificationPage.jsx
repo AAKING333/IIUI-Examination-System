@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { formatTimeRange12 } from '../utils/timeFormat.js';
+import { extractErrorMessage } from '../services/apiClient.js';
 
 export default function StudentVerificationPage({ showBanner }) {
   const [searchTerm, setSearchTerm] = useState('');
@@ -11,7 +12,10 @@ export default function StudentVerificationPage({ showBanner }) {
     try {
       const url = query ? `/api/student-verifications?search=${encodeURIComponent(query)}` : '/api/student-verifications';
       const res = await fetch(url);
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(err, 'Failed to load student verifications.'));
+      }
       const data = await res.json();
       setRecords(data);
     } catch (err) {

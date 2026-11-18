@@ -14,6 +14,22 @@ export default function DatesheetPage({
 
   // Instant Search filter
   const [searchQuery, setSearchQuery] = useState('');
+  const [labMode, setLabMode] = useState('separate_days');
+
+  // Room type helper for visual color differentiation (Imran's Note & PRD v3.0)
+  const isLabRoom = (rName) => /lab/i.test(rName || '');
+
+  // Morning vs Evening helper
+  const isMorningSlot = (timeStr, startTime) => {
+    if (startTime) {
+      const h = parseInt(startTime.split(':')[0], 10);
+      return h < 12;
+    }
+    if (!timeStr) return true;
+    const m = timeStr.match(/(\d\d?):(\d\d)/);
+    if (!m) return true;
+    return parseInt(m[1], 10) < 12;
+  };
 
   // Distinct rooms allocated across all papers
   const distinctRoomsAllocated = useMemo(() => {
@@ -252,15 +268,19 @@ export default function DatesheetPage({
         sessions.push({
           slot_id: slotData.slot_id,
           time_str: slotData.time_str,
+          is_morning: isMorningSlot(slotData.time_str, slotData.start_time),
           session_total: totalSessionStudents,
           all_same_rooms: allSameRooms,
           courses,
         });
       });
 
+      const totalDayStudents = sessions.reduce((sum, s) => sum + (s.session_total || 0), 0);
+
       result.push({
         date: dateStr,
         date_formatted: fmtDateString(dateStr),
+        total_day_students: totalDayStudents,
         sessions,
       });
     });
@@ -282,11 +302,28 @@ export default function DatesheetPage({
             Official IIUI examination datesheet with synchronized room allocations and back-paper compliance.
           </p>
         </div>
-        <div className="toolbar__actions">
+        <div className="toolbar__actions" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: '#f8fafc', padding: '3px 8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
+            <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--iiui-navy)', whiteSpace: 'nowrap' }}>
+              Lab Mode:
+            </label>
+            <select
+              value={labMode}
+              onChange={(e) => setLabMode(e.target.value)}
+              className="form-control"
+              style={{ fontSize: '0.78rem', padding: '3px 8px', height: '28px', border: '1px solid #94a3b8', borderRadius: '4px' }}
+              title="Select practical laboratory scheduling mode (NR-04)"
+            >
+              <option value="separate_days">Dedicated Lab Days (Separate)</option>
+              <option value="concurrent">Concurrent Labs</option>
+              <option value="separate_week">Separate Lab Week</option>
+            </select>
+          </div>
+
           <button
             type="button"
             className="btn btn--primary"
-            onClick={onGenerate}
+            onClick={() => onGenerate(labMode)}
             disabled={isGenerating}
           >
             {isGenerating ? 'Generating Schedule...' : 'Generate Datesheet'}
@@ -427,10 +464,26 @@ export default function DatesheetPage({
             <tbody>
               {groupedDatesheet.map((dayGroup) => (
                 <React.Fragment key={dayGroup.date}>
-                  {/* Date Header Row (Same to same as Reference Datesheet Row 7) */}
+                  {/* Date Header Row (Same to same as Reference Datesheet Row 7 + Total Day Candidates) */}
                   <tr className="datesheet-date-banner-row">
                     <td colSpan={7}>
-                      <strong>{dayGroup.date_formatted}</strong>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <strong>{dayGroup.date_formatted}</strong>
+                        <span
+                          style={{
+                            background: '#047857',
+                            color: '#ffffff',
+                            padding: '3px 12px',
+                            borderRadius: '12px',
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.02em',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
+                          }}
+                        >
+                          Total Day Candidates: {dayGroup.total_day_students} students
+                        </span>
+                      </div>
                     </td>
                   </tr>
 
@@ -441,7 +494,7 @@ export default function DatesheetPage({
                       <React.Fragment key={`${dayGroup.date}-${session.slot_id}-${sIdx}`}>
                         {session.courses.map((c, cIdx) => (
                           <tr key={`${session.slot_id}-${c.course_code}-${cIdx}`} className="datesheet-row">
-                            {/* Col 1: Date (Day) / Time Slot */}
+                            {/* Col 1: Date (Day) / Time Slot (Morning vs Evening Bands) */}
                             {cIdx === 0 && (
                               <td
                                 rowSpan={k}
@@ -451,9 +504,15 @@ export default function DatesheetPage({
                                   verticalAlign: 'middle',
                                   fontWeight: 700,
                                   whiteSpace: 'nowrap',
+                                  background: session.is_morning ? '#fffbeb' : '#f5f3ff',
+                                  color: session.is_morning ? '#92400e' : '#5b21b6',
+                                  borderLeft: session.is_morning ? '4px solid #f59e0b' : '4px solid #8b5cf6',
                                 }}
                               >
-                                {session.time_str}
+                                <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px', opacity: 0.9 }}>
+                                  {session.is_morning ? '☀️ Morning' : '🌙 Evening'}
+                                </div>
+                                <div>{session.time_str}</div>
                               </td>
                             )}
 
@@ -473,7 +532,7 @@ export default function DatesheetPage({
                               <span className="batch-pill">{c.batches}</span>
                             </td>
 
-                            {/* Col 5: Room No. */}
+                            {/* Col 5: Room No. (Differentiated Lab vs Hall Badges) */}
                             {session.all_same_rooms ? (
                               cIdx === 0 && (
                                 <td
@@ -482,11 +541,29 @@ export default function DatesheetPage({
                                   style={{ textAlign: 'center', verticalAlign: 'middle' }}
                                 >
                                   {c.rooms.length > 0 ? (
-                                    c.rooms.map((r, rIdx) => (
-                                      <span key={rIdx} className="room-pill">
-                                        {r}
-                                      </span>
-                                    ))
+                                    c.rooms.map((r, rIdx) => {
+                                      const isLab = isLabRoom(r);
+                                      return (
+                                        <span
+                                          key={rIdx}
+                                          className={`room-pill ${isLab ? 'room-pill--lab' : 'room-pill--hall'}`}
+                                          style={{
+                                            background: isLab ? '#e0f2fe' : '#ecfdf5',
+                                            color: isLab ? '#0369a1' : '#047857',
+                                            border: `1px solid ${isLab ? '#7dd3fc' : '#a7f3d0'}`,
+                                            padding: '2px 7px',
+                                            borderRadius: '4px',
+                                            fontWeight: 700,
+                                            fontSize: '0.76rem',
+                                            display: 'inline-block',
+                                            margin: '2px',
+                                          }}
+                                          title={isLab ? 'Computer Laboratory' : 'Examination Hall / Lecture Room'}
+                                        >
+                                          {isLab ? '🖥️ ' : '🏛️ '}{r}
+                                        </span>
+                                      );
+                                    })
                                   ) : (
                                     <span>—</span>
                                   )}
@@ -495,11 +572,29 @@ export default function DatesheetPage({
                             ) : (
                               <td className="datesheet-cell-rooms" style={{ textAlign: 'center' }}>
                                 {c.rooms.length > 0 ? (
-                                  c.rooms.map((r, rIdx) => (
-                                    <span key={rIdx} className="room-pill">
-                                      {r}
-                                    </span>
-                                  ))
+                                  c.rooms.map((r, rIdx) => {
+                                    const isLab = isLabRoom(r);
+                                    return (
+                                      <span
+                                        key={rIdx}
+                                        className={`room-pill ${isLab ? 'room-pill--lab' : 'room-pill--hall'}`}
+                                        style={{
+                                          background: isLab ? '#e0f2fe' : '#ecfdf5',
+                                          color: isLab ? '#0369a1' : '#047857',
+                                          border: `1px solid ${isLab ? '#7dd3fc' : '#a7f3d0'}`,
+                                          padding: '2px 7px',
+                                          borderRadius: '4px',
+                                          fontWeight: 700,
+                                          fontSize: '0.76rem',
+                                          display: 'inline-block',
+                                          margin: '2px',
+                                        }}
+                                        title={isLab ? 'Computer Laboratory' : 'Examination Hall / Lecture Room'}
+                                      >
+                                        {isLab ? '🖥️ ' : '🏛️ '}{r}
+                                      </span>
+                                    );
+                                  })
                                 ) : (
                                   <span>—</span>
                                 )}

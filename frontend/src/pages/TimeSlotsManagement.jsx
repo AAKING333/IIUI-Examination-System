@@ -81,11 +81,30 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
 
   const handleSavePresetEdit = async () => {
     if (!editingPresetKey || !presetEditForm) return;
+    const days = Number(presetEditForm.days);
+    if (isNaN(days) || days <= 0) {
+      showBanner?.('Validation Error: Total days must be a positive integer.', 'danger');
+      return;
+    }
+    if (editingPresetKey === 'midterm' && (days < 7 || days > 10)) {
+      showBanner?.(`Validation Error: Midterm exam days threshold must be between 7 and 10 days. (Provided: ${days} days)`, 'danger');
+      return;
+    }
+    if (editingPresetKey === 'terminal' && (days < 7 || days > 18)) {
+      showBanner?.(`Validation Error: Terminal/Final exam days threshold cannot exceed 18 days (must be between 7 and 18 days). (Provided: ${days} days)`, 'danger');
+      return;
+    }
+    if (days > 18) {
+      showBanner?.(`Validation Error: Exam duration cannot exceed the maximum threshold of 18 days. (Provided: ${days} days)`, 'danger');
+      return;
+    }
+
     const updated = {
       ...presetTemplates,
       [editingPresetKey]: {
         ...presetTemplates[editingPresetKey],
         ...presetEditForm,
+        days: days,
       },
     };
     try {
@@ -128,8 +147,23 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       const dStart = new Date(autoForm.from_date);
       const dEnd = new Date(autoForm.to_date);
 
-      if (isNaN(dStart.getTime()) || isNaN(dEnd.getTime()) || dEnd < dStart) {
-        return { valid: false, error: 'End date must be greater than or equal to start date.' };
+      if (isNaN(dStart.getTime()) || isNaN(dEnd.getTime())) {
+        return { valid: false, error: 'Validation Error: Please select valid examination dates.' };
+      }
+
+      if (dEnd < dStart) {
+        return {
+          valid: false,
+          error: 'Validation Error: Start date (From Date) cannot be greater than End date (To Date). From date must be earlier than or equal to To date.',
+        };
+      }
+
+      const diffDays = Math.round((dEnd - dStart) / (1000 * 60 * 60 * 24)) + 1;
+      if (diffDays > 18) {
+        return {
+          valid: false,
+          error: `Validation Error: Exam duration exceeds the maximum allowed threshold of 18 days (selected: ${diffDays} days). Please select at most 18 days.`,
+        };
       }
 
       const startMin = timeToMin(autoForm.start_time);
@@ -137,14 +171,21 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       const duration = Number(autoForm.duration_minutes) || 0;
       const breakMin = Number(autoForm.break_minutes) || 0;
 
+      if (breakMin <= 0) {
+        return {
+          valid: false,
+          error: 'Validation Error: Break duration cannot be zero. Break must be at least 15 minutes (options: 15, 30, 45, or 60 minutes).',
+        };
+      }
+
       if (duration <= 0) {
-        return { valid: false, error: 'Slot duration must be greater than 0.' };
+        return { valid: false, error: 'Validation Error: Slot duration must be greater than 0.' };
       }
       if (endMin <= startMin) {
-        return { valid: false, error: 'Day end time must be later than start time.' };
+        return { valid: false, error: 'Validation Error: Day end time must be later than start time.' };
       }
       if (endMin - startMin < duration) {
-        return { valid: false, error: 'Day time window is shorter than a single slot duration.' };
+        return { valid: false, error: `Validation Error: Day time window (${endMin - startMin} mins) is shorter than a single slot duration (${duration} mins).` };
       }
 
       // Compute day slots
@@ -271,7 +312,21 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
 
   const handleRequestPreset = (preset) => {
     if (!presetDate) {
-      showBanner('Choose a start date for the exam preset.', 'danger');
+      showBanner('Validation Error: Choose a valid start date for the exam preset.', 'danger');
+      return;
+    }
+    const template = presetTemplates[preset];
+    const days = Number(template?.days || (preset === 'midterm' ? 8 : 18));
+    if (preset === 'midterm' && (days < 7 || days > 10)) {
+      showBanner(`Validation Error: Midterm preset days must be between 7 and 10 days (currently configured: ${days} days).`, 'danger');
+      return;
+    }
+    if (preset === 'terminal' && (days < 7 || days > 18)) {
+      showBanner(`Validation Error: Terminal preset days cannot exceed 18 days (must be between 7 and 18 days, currently configured: ${days} days).`, 'danger');
+      return;
+    }
+    if (days > 18) {
+      showBanner(`Validation Error: Exam duration cannot exceed the maximum allowed threshold of 18 days (currently configured: ${days} days).`, 'danger');
       return;
     }
     if (slots.length > 0) {
@@ -316,7 +371,14 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
   const handleSingleSubmit = async (e) => {
     e.preventDefault();
     if (!singleFormData.date || !singleFormData.start_time || !singleFormData.end_time) {
-      showBanner('Date, start time, and end time are required.', 'danger');
+      showBanner('Validation Error: Date, start time, and end time are required.', 'danger');
+      return;
+    }
+
+    const startMin = timeToMin(singleFormData.start_time);
+    const endMin = timeToMin(singleFormData.end_time);
+    if (endMin <= startMin) {
+      showBanner(`Validation Error: Slot end time (${singleFormData.end_time}) must be later than start time (${singleFormData.start_time}).`, 'danger');
       return;
     }
 
@@ -328,7 +390,10 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(singleFormData),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to update time slot.');
+        }
         showBanner(`Time Slot "${editingSlot.id}" updated successfully.`, 'success');
       } else {
         const res = await fetch('/api/time-slots', {
@@ -336,7 +401,10 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(singleFormData),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to create time slot.');
+        }
         showBanner('New time slot added successfully.', 'success');
       }
       setIsSingleModalOpen(false);
@@ -792,6 +860,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   onChange={(e) => setAutoForm({ ...autoForm, from_date: e.target.value })}
                   required
                 />
+                <span className="form-hint">Start date (must be earlier than or equal to To Date).</span>
               </div>
               <div className="form-group">
                 <label className="form-label">To Date</label>
@@ -802,6 +871,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   onChange={(e) => setAutoForm({ ...autoForm, to_date: e.target.value })}
                   required
                 />
+                <span className="form-hint">End date (max 18 days threshold).</span>
               </div>
             </div>
 
@@ -867,7 +937,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                 <label className="form-label">Interval / Break Between Slots (Minutes)</label>
                 <input
                   type="number"
-                  min="0"
+                  min="15"
                   max="120"
                   step="5"
                   className="form-control"
@@ -875,12 +945,17 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   onChange={(e) =>
                     setAutoForm({ ...autoForm, break_minutes: parseInt(e.target.value, 10) || 0 })
                   }
+                  required
                 />
+                <span className="form-hint" style={{ color: '#b91c1c' }}>
+                  *Break duration cannot be zero (minimum 15 mins, max 60 mins).
+                </span>
                 <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
                   {[
-                    { m: 15, label: '15 mins break' },
-                    { m: 10, label: '10 mins break' },
-                    { m: 0, label: 'No break (0m)' },
+                    { m: 15, label: '15 mins (Default)' },
+                    { m: 30, label: '30 mins' },
+                    { m: 45, label: '45 mins' },
+                    { m: 60, label: '60 mins' },
                   ].map((preset) => (
                     <button
                       key={preset.m}
@@ -1102,17 +1177,22 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   required
                 />
               </div>
-              <div className="form-group" style={{ maxWidth: '140px' }}>
-                <label className="form-label" style={{ fontWeight: 600 }}>Total Days</label>
+              <div className="form-group" style={{ maxWidth: '170px' }}>
+                <label className="form-label" style={{ fontWeight: 600 }}>
+                  Total Days {editingPresetKey === 'midterm' ? '(7-10)' : '(7-18)'}
+                </label>
                 <input
                   type="number"
-                  min="1"
-                  max="60"
+                  min={editingPresetKey === 'midterm' ? 7 : 7}
+                  max={editingPresetKey === 'midterm' ? 10 : 18}
                   className="form-control"
                   value={presetEditForm.days}
                   onChange={(e) => setPresetEditForm({ ...presetEditForm, days: parseInt(e.target.value, 10) || 1 })}
                   required
                 />
+                <span className="form-hint">
+                  {editingPresetKey === 'midterm' ? 'Threshold: 7 to 10 days.' : 'Threshold: max 18 days.'}
+                </span>
               </div>
             </div>
 

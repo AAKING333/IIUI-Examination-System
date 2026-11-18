@@ -236,6 +236,13 @@ def resolve_seating_plan(slot_id: str):
     total_physical = sum(r["capacity"] for r in rooms_out)
     util_pct = round((total_seated / total_usable * 100), 1) if total_usable else 0.0
 
+    # NR-08 & Sir Imran Discussion: Assign and display ECR Slot Incharge
+    ECR_MEMBERS = ["Dr. Tariq Sadad", "Mr. Jibran Mir", "Mr. Musharraf"]
+    busy_teachers = {t.lower() for c in slot_courses for t in (c.get("instructors") or [c.get("instructor")]) if t}
+    free_ecrs = [m for m in ECR_MEMBERS if not any(part in m.lower() for part in busy_teachers)]
+    slot_num = int(re.sub(r"\D", "", slot_id) or 0)
+    ecr_slot_incharge = free_ecrs[slot_num % len(free_ecrs)] if free_ecrs else ECR_MEMBERS[0]
+
     plan = {
         "rooms": rooms_out,
         "total_students": total_seated,
@@ -250,6 +257,8 @@ def resolve_seating_plan(slot_id: str):
         "start_time": slot["start_time"],
         "end_time": slot["end_time"],
         "label": slot.get("label", ""),
+        "ecr_slot_incharge": ecr_slot_incharge,
+        "ecr_incharge": ecr_slot_incharge,
         "courses": [{"code": c["code"], "title": c["title"]} for c in slot_courses],
     }
 
@@ -266,13 +275,38 @@ def save_custom_seating_plan(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="Missing slot_id in seating plan payload.")
 
     rooms = payload.get("rooms", [])
+    seen_rolls = set()
     for r in rooms:
+        r_name = r.get("room_name") or r.get("name") or str(r.get("room_id"))
         sheet = r.get("seating_sheet")
         if sheet and sheet.get("columns"):
+            if len(sheet["columns"]) > 11:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Validation Error: Room '{r_name}' seating plan exceeds maximum allowed columns (11). Found: {len(sheet['columns'])}.",
+                )
             count = 0
-            for col in sheet["columns"]:
-                count += sum(1 for roll in col.get("roll_nos", []) if roll and str(roll).strip())
+            for col_idx, col in enumerate(sheet["columns"], start=1):
+                col_rolls = [str(roll).strip() for roll in col.get("roll_nos", []) if roll and str(roll).strip()]
+                if len(col_rolls) > 15:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Validation Error: Column {col_idx} in Room '{r_name}' exceeds maximum allowed rows (15). Found: {len(col_rolls)} seats.",
+                    )
+                for roll in col_rolls:
+                    if roll in seen_rolls:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Validation Error: Student '{roll}' is allocated to multiple desks in time slot '{slot_id}'.",
+                        )
+                    seen_rolls.add(roll)
+                count += len(col_rolls)
             r["seated"] = count
+            if count > 165:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Validation Error: Room '{r_name}' seating count ({count}) exceeds maximum capacity ceiling of 165 seats.",
+                )
             max_c_rows = max([r.get("rows", 0)] + [len(col.get("roll_nos", [])) for col in sheet["columns"]], default=0)
             r["rows"] = max_c_rows
 

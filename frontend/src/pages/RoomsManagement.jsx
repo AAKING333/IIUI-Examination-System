@@ -64,11 +64,31 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.name.trim()) {
-      showBanner('Room name is required.', 'danger');
+      showBanner('Validation Error: Room name is required.', 'danger');
       return;
     }
-    if (formData.rows <= 0 || formData.columns <= 0) {
-      showBanner('Rows and columns must be greater than 0.', 'danger');
+    const rows = Number(formData.rows);
+    const cols = Number(formData.columns);
+    const cap = Number(formData.capacity) || (rows * cols);
+
+    if (rows <= 0 || cols <= 0) {
+      showBanner('Validation Error: Rows and columns must be greater than 0.', 'danger');
+      return;
+    }
+    if (rows > 15) {
+      showBanner(`Validation Error: Number of rows cannot exceed 15 (provided: ${rows}). Maximum allowed rows is 15.`, 'danger');
+      return;
+    }
+    if (cols > 11) {
+      showBanner(`Validation Error: Number of columns cannot exceed 11 (provided: ${cols}). Maximum allowed columns is 11.`, 'danger');
+      return;
+    }
+    if (cap > 165) {
+      showBanner(`Validation Error: Room capacity cannot exceed 165 seats (calculated: ${cap}). Maximum capacity is 15 rows × 11 columns (165 seats).`, 'danger');
+      return;
+    }
+    if (cap < 1) {
+      showBanner('Validation Error: Room capacity must be at least 1 seat.', 'danger');
       return;
     }
 
@@ -76,9 +96,9 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
       ...formData,
       name: formData.name.trim(),
       department: (formData.department || '').trim() || 'CS',
-      rows: Number(formData.rows),
-      columns: Number(formData.columns),
-      capacity: Number(formData.capacity) || Number(formData.rows) * Number(formData.columns),
+      rows: rows,
+      columns: cols,
+      capacity: cap,
       reserve_capacity: Number(formData.reserve_capacity || 0),
       invigilators_required: Number(formData.invigilators_required || 1),
     };
@@ -91,7 +111,11 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = typeof errData.detail === 'string' ? errData.detail : (Array.isArray(errData.detail) ? errData.detail.map(d => d.msg).join(', ') : 'Update failed');
+          throw new Error(errMsg);
+        }
         showBanner(`Room "${payload.name}" updated successfully.`, 'success');
       } else {
         const res = await fetch('/api/rooms', {
@@ -99,7 +123,11 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = typeof errData.detail === 'string' ? errData.detail : (Array.isArray(errData.detail) ? errData.detail.map(d => d.msg).join(', ') : 'Creation failed');
+          throw new Error(errMsg);
+        }
         showBanner(`Room "${payload.name}" added successfully.`, 'success');
       }
       setIsModalOpen(false);
@@ -341,44 +369,46 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
 
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">Number of Rows</label>
+              <label className="form-label">Number of Rows (Max 15)</label>
               <input
                 type="number"
                 min="1"
-                max="50"
+                max="15"
                 className="form-control"
                 value={formData.rows}
                 onChange={(e) => handleDimensionsChange(e.target.value, formData.columns)}
                 required
               />
+              <span className="form-hint">Physical room row count (1 to 15 rows).</span>
             </div>
             <div className="form-group">
-              <label className="form-label">Number of Columns</label>
+              <label className="form-label">Number of Columns (Max 11)</label>
               <input
                 type="number"
                 min="1"
-                max="50"
+                max="11"
                 className="form-control"
                 value={formData.columns}
                 onChange={(e) => handleDimensionsChange(formData.rows, e.target.value)}
                 required
               />
+              <span className="form-hint">Physical room column count (1 to 11 columns).</span>
             </div>
           </div>
 
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">Regular Capacity</label>
+              <label className="form-label">Regular Capacity (Max 165)</label>
               <input
                 type="number"
                 min="1"
-                max="2500"
+                max="165"
                 className="form-control"
                 value={formData.capacity}
                 onChange={(e) => setFormData({ ...formData, capacity: parseInt(e.target.value, 10) || 0 })}
                 required
               />
-              <span className="form-hint">Default: Rows &times; Columns ({Number(formData.rows || 0) * Number(formData.columns || 0)} seats).</span>
+              <span className="form-hint">Default: Rows &times; Columns ({Number(formData.rows || 0) * Number(formData.columns || 0)} seats, max 165).</span>
             </div>
             <div className="form-group">
               <label className="form-label">Reserve Buffer</label>

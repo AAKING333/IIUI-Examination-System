@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTimeRange12 } from '../utils/timeFormat.js';
+import { extractErrorMessage } from '../services/apiClient.js';
 
 export default function RollSlipPage({ showBanner }) {
   const [students, setStudents] = useState([]);
@@ -9,6 +10,7 @@ export default function RollSlipPage({ showBanner }) {
   const [slipData, setSlipData] = useState(null);
   const [isLoadingSlip, setIsLoadingSlip] = useState(false);
   const [slipError, setSlipError] = useState(null);
+  const [asStudentMode, setAsStudentMode] = useState(false);
 
   // Load students directory for live picker
   useEffect(() => {
@@ -28,16 +30,17 @@ export default function RollSlipPage({ showBanner }) {
     fetchStudents();
   }, [showBanner]);
 
-  // Fetch slip when selectedRollNo changes
-  const fetchSlip = async (rollNo) => {
+  // Fetch slip when selectedRollNo changes (supports ?as_student=true for NR-07 30-min lock)
+  const fetchSlip = async (rollNo, studentMode = asStudentMode) => {
     if (!rollNo) return;
     setIsLoadingSlip(true);
     setSlipError(null);
     try {
-      const res = await fetch(`/api/roll-slip/${encodeURIComponent(rollNo)}`);
+      const qParam = studentMode ? '?as_student=true' : '';
+      const res = await fetch(`/api/roll-slip/${encodeURIComponent(rollNo)}${qParam}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to fetch roll number slip');
+        throw new Error(extractErrorMessage(err, 'Failed to fetch roll number slip'));
       }
       const data = await res.json();
       setSlipData(data);
@@ -88,7 +91,37 @@ export default function RollSlipPage({ showBanner }) {
             Official IIUI examination admit cards with synchronized hall seating allocations, timetable, and conduct code.
           </p>
         </div>
-        <div className="toolbar__actions">
+        <div className="toolbar__actions" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              cursor: 'pointer',
+              background: asStudentMode ? '#eff6ff' : '#f8fafc',
+              padding: '6px 12px',
+              borderRadius: '6px',
+              border: asStudentMode ? '1.5px solid #2563eb' : '1px solid #cbd5e1',
+              boxShadow: asStudentMode ? '0 1px 3px rgba(37,99,235,0.15)' : 'none',
+              transition: 'all 0.15s ease',
+            }}
+            title="Toggle Student Mobile View: simulates 30-min pre-exam seating lock (Imran's Note & PRD v3.0 NR-07)"
+          >
+            <input
+              type="checkbox"
+              checked={asStudentMode}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setAsStudentMode(next);
+                if (selectedRollNo) fetchSlip(selectedRollNo, next);
+              }}
+              style={{ cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: asStudentMode ? '#1e40af' : '#334155' }}>
+              📱 Student Mobile View (30m Lock)
+            </span>
+          </label>
+
           <a
             href="/api/roll-slips/all-pdf"
             className="btn btn--primary"
@@ -253,6 +286,25 @@ export default function RollSlipPage({ showBanner }) {
             </div>
           </div>
 
+          {/* Student Mode 30-min Lock Notice (Imran's Note & PRD v3.0 NR-07) */}
+          {asStudentMode && (
+            <div
+              className="alert-banner alert-banner--warning no-print"
+              style={{
+                marginBottom: '1rem',
+                borderLeft: '4px solid #f59e0b',
+                background: '#fffbeb',
+                color: '#92400e',
+              }}
+            >
+              <div>
+                <strong>🔒 Student Mobile View Active (IIUI NR-07 Protocol):</strong> Examination room and desk
+                allocations remain locked and become visible to students 30 minutes before each paper to prevent
+                unauthorized pre-arrangements.
+              </div>
+            </div>
+          )}
+
           {/* Official Document Sheet */}
           <div className="iiui-roll-slip-document" style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2rem 2.5rem', boxShadow: '0 4px 15px rgba(0,0,0,0.06)' }}>
             {/* Document Header */}
@@ -372,10 +424,22 @@ export default function RollSlipPage({ showBanner }) {
                       {formatTimeRange12(p.start_time, p.end_time)}
                     </td>
                     <td style={{ border: '1px solid #cbd5e1', padding: '6px', textAlign: 'center', fontWeight: 700, color: '#1e3a8a' }}>
-                      {p.room || '—'}
+                      {p.seat_released === false ? (
+                        <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', padding: '2px 8px', borderRadius: '4px', fontSize: '0.74rem', fontWeight: 700 }}>
+                          🔒 30m Before
+                        </span>
+                      ) : (
+                        p.room || '—'
+                      )}
                     </td>
                     <td style={{ border: '1px solid #cbd5e1', padding: '6px', textAlign: 'center', fontWeight: 600, color: '#0f172a' }}>
-                      {p.seat || 'Assigned'}
+                      {p.seat_released === false ? (
+                        <span style={{ color: '#94a3b8', fontStyle: 'italic', fontSize: '0.74rem' }}>
+                          Revealed 30 min prior
+                        </span>
+                      ) : (
+                        p.seat || 'Assigned'
+                      )}
                     </td>
                   </tr>
                 ))}

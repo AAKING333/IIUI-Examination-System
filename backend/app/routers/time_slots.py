@@ -79,6 +79,22 @@ def get_presets_endpoint():
 
 @router.put("/presets/templates")
 def save_presets_endpoint(templates: Dict[str, PresetTemplateIn]):
+    for key, tpl in templates.items():
+        if key == "midterm" and (tpl.days < 7 or tpl.days > 10):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Midterm exam days threshold must be between 7 and 10 days. (Provided: {tpl.days} days)",
+            )
+        if key == "terminal" and (tpl.days < 7 or tpl.days > 18):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Terminal/Final exam days threshold cannot exceed 18 days (must be between 7 and 18 days). (Provided: {tpl.days} days)",
+            )
+        if tpl.days > 18:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Exam duration cannot exceed the maximum threshold of 18 days. (Provided: {tpl.days} days)",
+            )
     clean = {k: v.dict() for k, v in templates.items()}
     save_preset_templates(clean)
     return {"message": "Preset templates updated successfully.", "templates": clean}
@@ -181,6 +197,21 @@ def create_exam_preset(params: SlotPresetIn):
         friday_times = [(s["start_time"], s["end_time"], s.get("label", ""), s.get("slot_type", "written")) for s in friday_sessions]
 
     requested_days = params.requested_days or template.get("days", 8 if params.preset == "midterm" else 18)
+    if requested_days > 18:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Exam duration exceeds the maximum allowed threshold of 18 days (requested: {requested_days} days).",
+        )
+    if params.preset == "midterm" and (requested_days < 7 or requested_days > 10):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Midterm examination days threshold must be between 7 and 10 days (requested: {requested_days} days).",
+        )
+    if params.preset == "terminal" and (requested_days < 7 or requested_days > 18):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Terminal/Final examination days threshold cannot exceed 18 days (must be between 7 and 18 days, requested: {requested_days} days).",
+        )
 
     candidates = []
     current_date = first_date

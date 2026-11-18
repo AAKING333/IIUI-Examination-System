@@ -874,7 +874,21 @@ class DataStore:
     def add_room(self, name: str, rows: int, columns: int, capacity: Optional[int] = None, room_type: Optional[str] = None, department: Optional[str] = None, reserve_capacity: Optional[int] = None, invigilators_required: Optional[int] = None) -> Dict[str, Any]:
         if any(room["name"].strip().lower() == name.strip().lower() for room in self.rooms):
             raise ValueError(f"Room '{name.strip()}' already exists.")
-        calc_cap = capacity if capacity is not None and capacity > 0 else (rows * columns)
+        r_int = int(rows)
+        c_int = int(columns)
+        if r_int > 15:
+            raise ValueError(f"Rows cannot exceed 15 (provided: {r_int}). Maximum allowed rows is 15.")
+        if r_int < 1:
+            raise ValueError("Rows must be at least 1.")
+        if c_int > 11:
+            raise ValueError(f"Columns cannot exceed 11 (provided: {c_int}). Maximum allowed columns is 11.")
+        if c_int < 1:
+            raise ValueError("Columns must be at least 1.")
+        calc_cap = int(capacity) if capacity is not None and capacity > 0 else (r_int * c_int)
+        if calc_cap > 165:
+            raise ValueError(f"Room capacity cannot exceed 165 seats (calculated: {calc_cap}). Maximum is 15 rows × 11 columns.")
+        if calc_cap < 1:
+            raise ValueError("Room capacity must be at least 1 seat.")
         is_lab = (room_type == "lab") or ("lab" in name.strip().lower())
         rtype = "lab" if is_lab else "hall"
         prefix = "LAB-" if is_lab else "R"
@@ -892,8 +906,8 @@ class DataStore:
         room = {
             "id": new_id,
             "name": name.strip(),
-            "rows": int(rows),
-            "columns": int(columns),
+            "rows": r_int,
+            "columns": c_int,
             "capacity": int(calc_cap),
             "room_type": rtype,
             "department": dept,
@@ -910,10 +924,25 @@ class DataStore:
             return None
         if any(other["id"] != room_id and other["name"].strip().lower() == name.strip().lower() for other in self.rooms):
             raise ValueError(f"Room '{name.strip()}' already exists.")
+        r_int = int(rows)
+        c_int = int(columns)
+        if r_int > 15:
+            raise ValueError(f"Rows cannot exceed 15 (provided: {r_int}). Maximum allowed rows is 15.")
+        if r_int < 1:
+            raise ValueError("Rows must be at least 1.")
+        if c_int > 11:
+            raise ValueError(f"Columns cannot exceed 11 (provided: {c_int}). Maximum allowed columns is 11.")
+        if c_int < 1:
+            raise ValueError("Columns must be at least 1.")
+        calc_cap = int(capacity) if capacity is not None and capacity > 0 else (r_int * c_int)
+        if calc_cap > 165:
+            raise ValueError(f"Room capacity cannot exceed 165 seats (calculated: {calc_cap}). Maximum is 15 rows × 11 columns.")
+        if calc_cap < 1:
+            raise ValueError("Room capacity must be at least 1 seat.")
         room["name"] = name.strip()
-        room["rows"] = int(rows)
-        room["columns"] = int(columns)
-        room["capacity"] = int(capacity) if capacity is not None and capacity > 0 else (rows * columns)
+        room["rows"] = r_int
+        room["columns"] = c_int
+        room["capacity"] = calc_cap
         if room_type:
             room["room_type"] = room_type
         elif "room_type" not in room:
@@ -990,13 +1019,25 @@ class DataStore:
 
     def add_course(self, code: str, title: str, credit_hours: int = 3, is_lab: bool = False) -> Dict[str, Any]:
         clean_code = code.strip().upper()
+        clean_title = title.strip()
+        if len(clean_code) < 2 or not any(c.isalpha() for c in clean_code):
+            raise ValueError("Validation Error: Course code must contain letters and be between 2 and 20 characters.")
+        if len(clean_title) < 3 or not any(c.isalpha() for c in clean_title):
+            raise ValueError("Validation Error: Course title must contain letters and be at least 3 characters.")
+        try:
+            cr = int(credit_hours)
+            if cr < 1 or cr > 6:
+                raise ValueError("Validation Error: Credit hours must be an integer between 1 and 6.")
+        except (ValueError, TypeError):
+            raise ValueError("Validation Error: Credit hours must be an integer between 1 and 6.")
+
         if clean_code in self.course_by_code:
-            raise ValueError(f"Course with code '{clean_code}' already exists.")
+            raise ValueError(f"Validation Error: Course with code '{clean_code}' already exists.")
 
         course = {
             "code": clean_code,
-            "title": title.strip(),
-            "credit_hours": int(credit_hours),
+            "title": clean_title,
+            "credit_hours": cr,
             "is_lab": bool(is_lab),
             "student_roll_numbers": [],
             "regular_roll_numbers": [],
@@ -1012,9 +1053,18 @@ class DataStore:
         if not course:
             return None
         if title is not None:
-            course["title"] = title.strip()
+            clean_title = title.strip()
+            if len(clean_title) < 3 or not any(c.isalpha() for c in clean_title):
+                raise ValueError("Validation Error: Course title must contain letters and be at least 3 characters.")
+            course["title"] = clean_title
         if credit_hours is not None:
-            course["credit_hours"] = int(credit_hours)
+            try:
+                cr = int(credit_hours)
+                if cr < 1 or cr > 6:
+                    raise ValueError("Validation Error: Credit hours must be an integer between 1 and 6.")
+                course["credit_hours"] = cr
+            except (ValueError, TypeError):
+                raise ValueError("Validation Error: Credit hours must be an integer between 1 and 6.")
         if is_lab is not None:
             course["is_lab"] = bool(is_lab)
         self._rebuild_indexes()
@@ -1069,16 +1119,19 @@ class DataStore:
     def add_instructor_assignment(self, program: str, batch: str, section: str, course_code: str, instructor: str) -> Dict[str, Any]:
         c_code = course_code.strip().upper()
         if c_code not in self.course_by_code:
-            raise ValueError(f"Course '{c_code}' does not exist in courses directory.")
+            raise ValueError(f"Validation Error: Course '{c_code}' does not exist in courses directory.")
         clean_program = program.strip().upper()
         clean_batch = batch.strip().upper()
         clean_section = section.strip().upper()
+        clean_instructor = instructor.strip()
+        if len(clean_instructor) < 2 or not any(c.isalpha() for c in clean_instructor):
+            raise ValueError("Validation Error: Instructor name must contain letters and be at least 2 characters.")
         if any(
             item["program"] == clean_program and item["batch"] == clean_batch
             and item["section"] == clean_section and item["course_code"] == c_code
             for item in self.instructor_assignments
         ):
-            raise ValueError("An instructor assignment already exists for this program, batch, section, and course.")
+            raise ValueError(f"Validation Error: An instructor assignment already exists for {clean_program} {clean_batch} Section {clean_section} in course {c_code}.")
 
         existing_nums = [int(a["id"][2:]) for a in self.instructor_assignments if a["id"].startswith("IA") and a["id"][2:].isdigit()]
         new_num = max(existing_nums) + 1 if existing_nums else 1
@@ -1090,7 +1143,7 @@ class DataStore:
             "batch": clean_batch,
             "section": clean_section,
             "course_code": c_code,
-            "instructor": instructor.strip(),
+            "instructor": clean_instructor,
         }
         self.instructor_assignments.append(item)
         self.save()
@@ -1108,28 +1161,32 @@ class DataStore:
         item = self.get_instructor_assignment(assignment_id)
         if not item:
             return None
-        if program is not None:
-            item["program"] = program.strip().upper()
-        if batch is not None:
-            item["batch"] = batch.strip().upper()
-        if section is not None:
-            item["section"] = section.strip().upper()
-        if course_code is not None:
-            c_code = course_code.strip().upper()
-            if c_code not in self.course_by_code:
-                raise ValueError(f"Course '{c_code}' does not exist in courses directory.")
-            item["course_code"] = c_code
-        if instructor is not None:
-            item["instructor"] = instructor.strip()
+        new_program = program.strip().upper() if program is not None else item["program"]
+        new_batch = batch.strip().upper() if batch is not None else item["batch"]
+        new_section = section.strip().upper() if section is not None else item["section"]
+        new_course_code = course_code.strip().upper() if course_code is not None else item["course_code"]
+        new_instructor = instructor.strip() if instructor is not None else item["instructor"]
+
+        if new_course_code not in self.course_by_code:
+            raise ValueError(f"Validation Error: Course '{new_course_code}' does not exist in courses directory.")
+        if len(new_instructor) < 2 or not any(c.isalpha() for c in new_instructor):
+            raise ValueError("Validation Error: Instructor name must contain letters and be at least 2 characters.")
+
         if any(
             other["id"] != assignment_id
-            and other["program"] == item["program"]
-            and other["batch"] == item["batch"]
-            and other["section"] == item["section"]
-            and other["course_code"] == item["course_code"]
+            and other["program"] == new_program
+            and other["batch"] == new_batch
+            and other["section"] == new_section
+            and other["course_code"] == new_course_code
             for other in self.instructor_assignments
         ):
-            raise ValueError("An instructor assignment already exists for this program, batch, section, and course.")
+            raise ValueError(f"Validation Error: An instructor assignment already exists for {new_program} {new_batch} Section {new_section} in course {new_course_code}.")
+
+        item["program"] = new_program
+        item["batch"] = new_batch
+        item["section"] = new_section
+        item["course_code"] = new_course_code
+        item["instructor"] = new_instructor
         self.save()
         return item
 
@@ -1184,23 +1241,26 @@ class DataStore:
     ) -> Dict[str, Any]:
         clean_roll = roll_no.strip().upper()
         if clean_roll in self.student_by_roll:
-            raise ValueError(f"Student with Roll No '{clean_roll}' already exists.")
+            raise ValueError(f"Validation Error: Student with Roll No '{clean_roll}' already exists.")
 
         normalized_enrols = []
         seen_courses = set()
         for e in enrolments:
             c_code = e.get("course", "").strip().upper()
             if c_code not in self.course_by_code:
-                raise ValueError(f"Course '{c_code}' does not exist in courses directory.")
+                raise ValueError(f"Validation Error: Course '{c_code}' does not exist in courses directory.")
             if c_code in seen_courses:
-                raise ValueError(f"Course '{c_code}' is listed more than once for this student.")
+                raise ValueError(f"Validation Error: Course '{c_code}' is listed more than once for this student.")
             seen_courses.add(c_code)
             t = e.get("type", "regular").lower()
             if t not in ("regular", "back"):
                 t = "regular"
-            attendance = float(e.get("attendance_percent", 100))
+            try:
+                attendance = float(e.get("attendance_percent", 100))
+            except (ValueError, TypeError):
+                attendance = 100.0
             if attendance < 0 or attendance > 100:
-                raise ValueError("Course attendance must be between 0 and 100 percent.")
+                raise ValueError("Validation Error: Course attendance must be between 0% and 100%.")
             if c_code:
                 normalized_enrols.append({"course": c_code, "type": t, "attendance_percent": attendance})
 
@@ -1234,6 +1294,30 @@ class DataStore:
         student = self.get_student(roll_no)
         if not student:
             return None
+
+        normalized_enrols = None
+        if enrolments is not None:
+            normalized_enrols = []
+            seen_courses = set()
+            for e in enrolments:
+                c_code = e.get("course", "").strip().upper()
+                if c_code not in self.course_by_code:
+                    raise ValueError(f"Validation Error: Course '{c_code}' does not exist in courses directory.")
+                if c_code in seen_courses:
+                    raise ValueError(f"Validation Error: Course '{c_code}' is listed more than once for this student.")
+                seen_courses.add(c_code)
+                t = e.get("type", "regular").lower()
+                if t not in ("regular", "back"):
+                    t = "regular"
+                try:
+                    attendance = float(e.get("attendance_percent", 100))
+                except (ValueError, TypeError):
+                    attendance = 100.0
+                if attendance < 0 or attendance > 100:
+                    raise ValueError("Validation Error: Course attendance must be between 0% and 100%.")
+                if c_code:
+                    normalized_enrols.append({"course": c_code, "type": t, "attendance_percent": attendance})
+
         if name is not None:
             student["name"] = name.strip()
         if father_name is not None:
@@ -1246,24 +1330,7 @@ class DataStore:
             student["section"] = section.strip().upper()
         if faculty is not None:
             student["faculty"] = faculty.strip()
-        if enrolments is not None:
-            normalized_enrols = []
-            seen_courses = set()
-            for e in enrolments:
-                c_code = e.get("course", "").strip().upper()
-                if c_code not in self.course_by_code:
-                    raise ValueError(f"Course '{c_code}' does not exist in courses directory.")
-                if c_code in seen_courses:
-                    raise ValueError(f"Course '{c_code}' is listed more than once for this student.")
-                seen_courses.add(c_code)
-                t = e.get("type", "regular").lower()
-                if t not in ("regular", "back"):
-                    t = "regular"
-                attendance = float(e.get("attendance_percent", 100))
-                if attendance < 0 or attendance > 100:
-                    raise ValueError("Course attendance must be between 0 and 100 percent.")
-                if c_code:
-                    normalized_enrols.append({"course": c_code, "type": t, "attendance_percent": attendance})
+        if normalized_enrols is not None:
             student["enrolments"] = normalized_enrols
             student["courses"] = [e["course"] for e in normalized_enrols]
 
@@ -1410,7 +1477,14 @@ class DataStore:
             raise ValueError(f"Invalid date format (must be YYYY-MM-DD): {e}")
 
         if d_end < d_start:
-            raise ValueError("End date cannot be earlier than start date.")
+            raise ValueError("Start date (From Date) cannot be greater than End date (To Date). From date must be earlier than or equal to To date.")
+
+        diff_days = (d_end - d_start).days + 1
+        if diff_days > 18:
+            raise ValueError(f"Exam duration exceeds the maximum allowed threshold of 18 days (selected range is {diff_days} days). Maximum allowed duration is 18 days.")
+
+        if break_minutes <= 0:
+            raise ValueError("Break duration between slots cannot be zero. Break must be at least 15 minutes (options: 15, 30, 45, or 60 minutes).")
 
         def time_to_min(t_str: str) -> int:
             parts = t_str.strip().split(":")

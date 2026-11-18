@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import Modal from '../components/Modal.jsx';
+import { extractErrorMessage } from '../services/apiClient.js';
 
 const PRESET_PROGRAMS = ['BSCS', 'BSIT', 'BSSE'];
 const PRESET_BATCHES = ['F23', 'F24', 'F25', 'F26'];
@@ -135,13 +136,67 @@ export default function StudentsManagement({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.roll_no.trim() || !formData.name.trim()) {
-      showBanner('Roll number and student name are required.', 'danger');
+    const cleanRoll = (formData.roll_no || '').trim().toUpperCase();
+    const cleanName = (formData.name || '').trim();
+    const cleanFather = (formData.father_name || '').trim();
+    const cleanProg = (formData.program || '').trim();
+    const cleanBatch = (formData.batch || '').trim();
+    const cleanSec = (formData.section || '').trim().toUpperCase();
+
+    if (!cleanRoll || cleanRoll.length < 3) {
+      showBanner('Validation Error: Roll number must have at least 3 characters.', 'danger');
       return;
     }
-    if (formData.enrolments.length === 0) {
-      showBanner('At least one course enrolment is required.', 'danger');
+    if (!cleanName || cleanName.length < 2) {
+      showBanner('Validation Error: Student name must have at least 2 characters.', 'danger');
       return;
+    }
+    if (!/[A-Za-z]/.test(cleanName)) {
+      showBanner('Validation Error: Student name must contain letters and cannot be purely numeric.', 'danger');
+      return;
+    }
+    if (!cleanFather || cleanFather.length < 2) {
+      showBanner('Validation Error: Father name must have at least 2 characters.', 'danger');
+      return;
+    }
+    if (!/[A-Za-z]/.test(cleanFather)) {
+      showBanner('Validation Error: Father name must contain letters and cannot be purely numeric.', 'danger');
+      return;
+    }
+
+    if (!editingStudent && students.some((s) => s.roll_no.toUpperCase() === cleanRoll)) {
+      showBanner(`Validation Error: Student with Roll No '${cleanRoll}' already exists.`, 'danger');
+      return;
+    }
+
+    if (formData.enrolments.length === 0) {
+      showBanner('Validation Error: At least one course enrolment is required.', 'danger');
+      return;
+    }
+
+    if (formData.enrolments.length > 8) {
+      showBanner(`Validation Error: A student cannot be enrolled in more than 8 courses per semester (selected: ${formData.enrolments.length}).`, 'danger');
+      return;
+    }
+
+    // Check duplicate course enrolments
+    const seenCourses = new Set();
+    for (let i = 0; i < formData.enrolments.length; i++) {
+      const c = (formData.enrolments[i].course || '').trim().toUpperCase();
+      if (!c) {
+        showBanner(`Validation Error: Course code cannot be empty in row #${i + 1}.`, 'danger');
+        return;
+      }
+      if (seenCourses.has(c)) {
+        showBanner(`Validation Error: Course '${c}' is enrolled more than once for this student.`, 'danger');
+        return;
+      }
+      seenCourses.add(c);
+      const att = parseFloat(formData.enrolments[i].attendance_percent);
+      if (isNaN(att) || att < 0 || att > 100) {
+        showBanner(`Validation Error: Attendance for course '${c}' must be between 0% and 100%.`, 'danger');
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -151,39 +206,45 @@ export default function StudentsManagement({
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name: formData.name.trim(),
-            father_name: formData.father_name.trim(),
-            program: formData.program.trim(),
-            batch: formData.batch.trim(),
-            section: formData.section.trim().toUpperCase(),
+            name: cleanName,
+            father_name: cleanFather,
+            program: cleanProg,
+            batch: cleanBatch,
+            section: cleanSec,
             faculty: formData.faculty.trim(),
             enrolments: formData.enrolments,
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(errData, 'Student update failed.'));
+        }
         showBanner(`Student ${editingStudent.roll_no} updated successfully.`, 'success');
       } else {
         const res = await fetch('/api/students', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            roll_no: formData.roll_no.trim().toUpperCase(),
-            name: formData.name.trim(),
-            father_name: formData.father_name.trim(),
-            program: formData.program.trim(),
-            batch: formData.batch.trim(),
-            section: formData.section.trim().toUpperCase(),
+            roll_no: cleanRoll,
+            name: cleanName,
+            father_name: cleanFather,
+            program: cleanProg,
+            batch: cleanBatch,
+            section: cleanSec,
             faculty: formData.faculty.trim(),
             enrolments: formData.enrolments,
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
-        showBanner(`Student ${formData.roll_no.toUpperCase()} registered successfully.`, 'success');
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(errData, 'Student creation failed.'));
+        }
+        showBanner(`Student ${cleanRoll} registered successfully.`, 'success');
       }
       setIsModalOpen(false);
       onRefresh();
     } catch (err) {
-      showBanner(`Operation failed: ${err.message}`, 'danger');
+      showBanner(err.message, 'danger');
     } finally {
       setIsSubmitting(false);
     }
@@ -193,12 +254,15 @@ export default function StudentsManagement({
     setIsSubmitting(true);
     try {
       const res = await fetch(`/api/students/${rollNo}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(errData, 'Student deletion failed.'));
+      }
       showBanner(`Student ${rollNo} removed successfully.`, 'success');
       setDeleteConfirm(null);
       onRefresh();
     } catch (err) {
-      showBanner(`Delete failed: ${err.message}`, 'danger');
+      showBanner(err.message, 'danger');
     } finally {
       setIsSubmitting(false);
     }

@@ -190,16 +190,36 @@ export default function UMCPage({
   // Submit new UMC report
   const handleCreateReport = async (e) => {
     e.preventDefault();
-    if (!newReport.slot_id || !newReport.course_code || !newReport.roll_no || !newReport.room_id) {
-      showBanner?.('Please complete all required fields.', 'danger');
+    if (!newReport.slot_id) {
+      showBanner?.('Validation Error: Examination slot is required.', 'danger');
+      return;
+    }
+    if (!newReport.room_id) {
+      showBanner?.('Validation Error: Examination room is required.', 'danger');
+      return;
+    }
+    if (!newReport.roll_no?.trim()) {
+      showBanner?.('Validation Error: Student Roll Number is required.', 'danger');
+      return;
+    }
+    if (!newReport.course_code?.trim()) {
+      showBanner?.('Validation Error: Examination course is required.', 'danger');
+      return;
+    }
+    if (!newReport.invigilator?.trim()) {
+      showBanner?.('Validation Error: Reporting invigilator name is required.', 'danger');
+      return;
+    }
+    if (!newReport.details?.trim() || newReport.details.trim().length < 5) {
+      showBanner?.('Validation Error: Incident description must be at least 5 characters long.', 'danger');
       return;
     }
     if (!newReport.signature_data) {
-      showBanner?.('Invigilator digital signature is required.', 'danger');
+      showBanner?.('Validation Error: Invigilator digital signature is required before filing.', 'danger');
       return;
     }
     if (!newReport.evidence || newReport.evidence.length === 0) {
-      showBanner?.('Please attach at least one photo of the physical evidence / answer script.', 'danger');
+      showBanner?.('Validation Error: Please attach at least one photo or scan of the physical evidence / answer script.', 'danger');
       return;
     }
     setIsSubmitting(true);

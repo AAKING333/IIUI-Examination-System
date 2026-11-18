@@ -25,6 +25,31 @@ const getCleanTeacher = (inst) => {
   return teachers.length > 0 ? teachers.join(' / ') : cleaned;
 };
 
+// Distinct Course Colors Palette (Imran's Note & PRD v3.0)
+const COURSE_PALETTE = [
+  { bg: '#eff6ff', text: '#1e40af', border: '#93c5fd', chip: '#dbeafe' }, // Indigo/Blue
+  { bg: '#f0fdf4', text: '#166534', border: '#86efac', chip: '#dcfce7' }, // Emerald/Green
+  { bg: '#fdf4ff', text: '#86198f', border: '#f0abfc', chip: '#fae8ff' }, // Fuchsia/Purple
+  { bg: '#fff7ed', text: '#9a3412', border: '#fdba74', chip: '#ffedd5' }, // Amber/Orange
+  { bg: '#f0fdfa', text: '#115e59', border: '#5eead4', chip: '#ccfbf1' }, // Teal
+  { bg: '#fefce8', text: '#854d0e', border: '#fde047', chip: '#fef9c3' }, // Yellow
+  { bg: '#f5f3ff', text: '#5b21b6', border: '#c4b5fd', chip: '#ede9fe' }, // Violet
+  { bg: '#fff1f2', text: '#9f1239', border: '#fda4af', chip: '#ffe4e6' }, // Rose
+  { bg: '#ecfeff', text: '#155e75', border: '#67e8f9', chip: '#cffafe' }, // Sky/Cyan
+];
+
+function getCourseColor(code) {
+  if (!code || code === '—' || code.includes('Vacant')) return null;
+  const clean = code.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) {
+    hash = (hash << 5) - hash + clean.charCodeAt(i);
+    hash |= 0;
+  }
+  const idx = Math.abs(hash) % COURSE_PALETTE.length;
+  return COURSE_PALETTE[idx];
+}
+
 export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [] }, courses = [], students = [], rooms = [] }) {
   const [selectedSlotId, setSelectedSlotId] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
@@ -32,6 +57,12 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
   const [duties, setDuties] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Cascading Quick-Locator (Imran's Note: Timeslot -> Room -> Course -> Student)
+  const [locatorRoomId, setLocatorRoomId] = useState('');
+  const [locatorCourseCode, setLocatorCourseCode] = useState('');
+  const [locatorStudentRoll, setLocatorStudentRoll] = useState('');
+  const [highlightedDesk, setHighlightedDesk] = useState(null); // { roomId, roomName, colIdx, colNo, rowIdx, rowNo, roll }
 
   // Interactive Editing State
   const [isEditMode, setIsEditMode] = useState(false);
@@ -182,7 +213,81 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
     setCheckedAlerts({});
     setDismissedAlerts({});
     setIsNotificationOpen(false);
+    setLocatorRoomId('');
+    setLocatorCourseCode('');
+    setLocatorStudentRoll('');
+    setHighlightedDesk(null);
   }, [selectedSlotId]);
+
+  // Cascading quick locator course & student options (Imran's Note)
+  const locatorAvailableCourses = useMemo(() => {
+    if (!plan || !locatorRoomId) return [];
+    const room = (plan.rooms || []).find((r) => r.room_id === locatorRoomId);
+    if (!room || !room.seating_sheet) return [];
+    const courseCountMap = {};
+    (room.seating_sheet.columns || []).forEach((col) => {
+      const paper = col.paper;
+      if (paper && paper !== '—' && !paper.includes('Vacant')) {
+        const seatedInCol = (col.roll_nos || []).filter((r) => (r || '').trim()).length;
+        courseCountMap[paper] = (courseCountMap[paper] || 0) + seatedInCol;
+      }
+    });
+    return Object.entries(courseCountMap).map(([code, count]) => ({ code, count }));
+  }, [plan, locatorRoomId]);
+
+  const locatorAvailableStudents = useMemo(() => {
+    if (!plan || !locatorRoomId || !locatorCourseCode) return [];
+    const room = (plan.rooms || []).find((r) => r.room_id === locatorRoomId);
+    if (!room || !room.seating_sheet) return [];
+    const list = [];
+    (room.seating_sheet.columns || []).forEach((col, cIdx) => {
+      if (col.paper === locatorCourseCode) {
+        (col.roll_nos || []).forEach((roll, rIdx) => {
+          const trimmed = (roll || '').trim();
+          if (trimmed && trimmed.toLowerCase() !== 'buffer') {
+            list.push({ roll: trimmed, colNo: col.column_no, rowNo: rIdx + 1, colIdx: cIdx, rowIdx: rIdx });
+          }
+        });
+      }
+    });
+    return list;
+  }, [plan, locatorRoomId, locatorCourseCode]);
+
+  const handleLocateStudent = (roll) => {
+    if (!plan || !locatorRoomId || !roll) return;
+    const room = (plan.rooms || []).find((r) => r.room_id === locatorRoomId);
+    if (!room || !room.seating_sheet) return;
+
+    for (let cIdx = 0; cIdx < room.seating_sheet.columns.length; cIdx++) {
+      const col = room.seating_sheet.columns[cIdx];
+      const rIdx = (col.roll_nos || []).findIndex(
+        (r) => (r || '').trim().toLowerCase() === roll.trim().toLowerCase()
+      );
+      if (rIdx !== -1) {
+        setHighlightedDesk({
+          roomId: room.room_id,
+          roomName: room.room_name,
+          colIdx,
+          colNo: col.column_no,
+          rowIdx: rIdx,
+          rowNo: rIdx + 1,
+          roll,
+        });
+
+        setTimeout(() => {
+          const elem = document.getElementById(`cell-${room.room_id}-${colIdx}-${rIdx}`);
+          if (elem) {
+            elem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 100);
+
+        setTimeout(() => {
+          setHighlightedDesk(null);
+        }, 6000);
+        return;
+      }
+    }
+  };
 
   // Click outside to close notification popup
   useEffect(() => {
@@ -837,6 +942,25 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               {formatTimeRange12(planData.start_time, planData.end_time)} &bull; <strong>Room:</strong> {room.room_name}
               {' '}&bull; <strong>Capacity:</strong>{' '}
               {Number(room.capacity || (room.rows || 0) * (room.columns || 0))}
+              {planData.ecr_slot_incharge && (
+                <span
+                  style={{
+                    marginLeft: '0.75rem',
+                    background: '#fef3c7',
+                    color: '#92400e',
+                    border: '1px solid #f59e0b',
+                    borderRadius: '4px',
+                    padding: '2px 8px',
+                    fontSize: '0.76rem',
+                    fontWeight: 700,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  🛡️ ECR Incharge: {planData.ecr_slot_incharge}
+                </span>
+              )}
             </p>
 
             {/* Official Invigilator Assignment Strip */}
@@ -858,6 +982,74 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                 </span>
               )}
             </div>
+
+            {/* Course Color Legend for this Room (Imran's Note & PRD v3.0) */}
+            {(() => {
+              const roomCourses = Array.from(
+                new Set(
+                  (sheet.columns || [])
+                    .map((c) => c.paper)
+                    .filter((p) => p && p !== '—' && !p.includes('Vacant'))
+                )
+              );
+              if (!roomCourses.length) return null;
+              return (
+                <div
+                  className="dcs-seating-sheet__legend"
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    marginTop: '0.45rem',
+                    padding: '4px 8px',
+                    background: '#f8fafc',
+                    borderRadius: '4px',
+                    border: '1px solid #e2e8f0',
+                  }}
+                >
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--iiui-navy)' }}>
+                    Courses in this Room:
+                  </span>
+                  {roomCourses.map((cCode) => {
+                    const theme = getCourseColor(cCode);
+                    const colMatches = sheet.columns.filter((c) => c.paper === cCode);
+                    const studentCount = colMatches.reduce(
+                      (acc, col) => acc + (col.roll_nos || []).filter((r) => r && r.trim()).length,
+                      0
+                    );
+                    return (
+                      <span
+                        key={cCode}
+                        style={{
+                          background: theme?.bg || '#f1f5f9',
+                          color: theme?.text || '#0f172a',
+                          border: `1px solid ${theme?.border || '#cbd5e1'}`,
+                          padding: '1px 7px',
+                          borderRadius: '10px',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: '7px',
+                            height: '7px',
+                            borderRadius: '50%',
+                            background: theme?.text || '#0f172a',
+                            display: 'inline-block',
+                          }}
+                        />
+                        {cCode} ({studentCount} students)
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Interactive Room Edit Bar in Edit Mode */}
@@ -958,17 +1150,27 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                       ? '— (Vacant)'
                       : col.paper_header || (cleanInst ? `${spacedCode} - ${cleanInst}` : spacedCode);
                     const headerText = rawHeader.replace(/\s*\((?:BSCS|BSIT|BSSE|BS)[^)]*\)/gi, '').trim();
+                    const courseTheme = getCourseColor(col.paper);
 
                     return (
                       <th
                         key={col.column_no}
                         style={{
-                          background: isVacant ? 'var(--itms-surface-muted)' : 'var(--iiui-navy-50)',
-                          color: isVacant ? 'var(--itms-text-muted)' : 'var(--iiui-navy)',
+                          background: isVacant
+                            ? 'var(--itms-surface-muted)'
+                            : courseTheme
+                              ? courseTheme.bg
+                              : 'var(--iiui-navy-50)',
+                          color: isVacant
+                            ? 'var(--itms-text-muted)'
+                            : courseTheme
+                              ? courseTheme.text
+                              : 'var(--iiui-navy)',
                           textAlign: 'center',
                           fontSize: '0.73rem',
                           fontWeight: 700,
                           borderRight: '1px solid #cbd5e1',
+                          borderBottom: courseTheme ? `3px solid ${courseTheme.border}` : '1px solid #cbd5e1',
                           padding: '5px 4px',
                           minWidth: '85px',
                           maxWidth: '120px',
@@ -1002,6 +1204,12 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                         selectedSeat.colIdx === colIdx &&
                         selectedSeat.rowIdx === ri;
                       const isTargetVacant = selectedSeat && isVacant;
+                      const courseTheme = getCourseColor(col.paper);
+                      const isThisHighlighted =
+                        highlightedDesk &&
+                        highlightedDesk.roomId === room.room_id &&
+                        highlightedDesk.colIdx === colIdx &&
+                        highlightedDesk.rowIdx === ri;
 
                       let cellClass = '';
                       if (isEditMode) {
@@ -1016,20 +1224,30 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                       return (
                         <td
                           key={col.column_no}
+                          id={`cell-${room.room_id}-${colIdx}-${ri}`}
                           className={cellClass.trim()}
                           onClick={() => isEditMode && !isBufferCell && handleCellClick(roomIdx, colIdx, ri)}
                           style={{
                             borderRight: '1px solid #cbd5e1',
+                            borderLeft: !isVacant && !isBufferCell && courseTheme ? `3px solid ${courseTheme.border}` : undefined,
                             fontWeight: rollVal ? 700 : 400,
                             fontSize: '0.74rem',
                             fontFamily: rollVal || isBufferCell ? 'monospace' : 'inherit',
                             background: isSelected
                               ? undefined
+                              : isThisHighlighted
+                                ? '#fef08a'
+                                : isBufferCell
+                                  ? '#fffbeb'
+                                  : isVacant
+                                    ? '#fafafa'
+                                    : (courseTheme ? courseTheme.bg : 'transparent'),
+                            color: isBufferCell ? '#92400e' : (courseTheme && rollVal ? courseTheme.text : undefined),
+                            boxShadow: isThisHighlighted
+                              ? '0 0 0 3px #eab308, inset 0 0 8px #fef08a'
                               : isBufferCell
-                                ? '#fffbeb'
-                                : (isVacant ? '#fafafa' : 'transparent'),
-                            color: isBufferCell ? '#92400e' : undefined,
-                            boxShadow: isBufferCell ? 'inset 0 0 0 1px #fde68a' : undefined,
+                                ? 'inset 0 0 0 1px #fde68a'
+                                : undefined,
                             padding: '4px 6px',
                             minWidth: '85px',
                             maxWidth: '120px',
@@ -1591,6 +1809,209 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
               Back to Single Slot
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ECR Slot Incharge Status Banner (Imran's Note & PRD v3.0 NR-08/NR-13) */}
+      {plan && plan.ecr_slot_incharge && !bulkPlans.length && (
+        <div
+          className="no-print"
+          style={{
+            background: 'linear-gradient(135deg, #fef3c7 0%, #fffbeb 100%)',
+            border: '1px solid #fde68a',
+            borderLeft: '5px solid #d97706',
+            borderRadius: '8px',
+            padding: '0.65rem 1rem',
+            marginBottom: '1rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '0.5rem',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <span style={{ fontSize: '1.25rem' }}>🛡️</span>
+            <div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 800, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Examination Control Room (ECR) Administration
+              </div>
+              <div style={{ fontSize: '0.92rem', fontWeight: 800, color: '#78350f' }}>
+                Designated Slot Incharge: <span style={{ color: '#b45309' }}>{plan.ecr_slot_incharge}</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: '0.78rem', color: '#92400e', background: '#fde68a', padding: '3px 10px', borderRadius: '4px', fontWeight: 600 }}>
+            Session: {currentSlot ? `${currentSlot.date} • ${formatTimeRange12(currentSlot.start_time, currentSlot.end_time)}` : 'Active'}
+          </div>
+        </div>
+      )}
+
+      {/* Cascading Location Quick Locator (Imran's Note: Timeslot -> Room -> Course -> Student) */}
+      {plan && plan.rooms && plan.rooms.length > 0 && !bulkPlans.length && (
+        <div
+          className="card-table-wrapper no-print"
+          style={{
+            padding: '0.9rem 1.15rem',
+            marginBottom: '1.15rem',
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: '8px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '0.6rem',
+              flexWrap: 'wrap',
+              gap: '0.5rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '1rem' }}>📍</span>
+              <strong style={{ fontSize: '0.88rem', color: 'var(--iiui-navy)' }}>
+                Cascading Location Selector (Automated Desk Finder)
+              </strong>
+            </div>
+            <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+              Sequence: <strong>Timeslot</strong> &rarr; <strong>Room</strong> &rarr; <strong>Course</strong> &rarr; <strong>Student Desk</strong>
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+              gap: '0.75rem',
+            }}
+          >
+            {/* 1. Timeslot */}
+            <div>
+              <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#475569', marginBottom: '3px' }}>
+                1. Timeslot:
+              </label>
+              <select
+                className="form-control"
+                style={{ fontSize: '0.78rem', height: '32px', border: '1px solid #cbd5e1', borderRadius: '4px' }}
+                value={selectedSlotId}
+                onChange={(e) => {
+                  setSelectedSlotId(e.target.value);
+                  setLocatorRoomId('');
+                  setLocatorCourseCode('');
+                  setLocatorStudentRoll('');
+                }}
+              >
+                {slots.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.date} ({formatTimeRange12(s.start_time, s.end_time)})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 2. Room */}
+            <div>
+              <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#475569', marginBottom: '3px' }}>
+                2. Room:
+              </label>
+              <select
+                className="form-control"
+                style={{ fontSize: '0.78rem', height: '32px', border: '1px solid #cbd5e1', borderRadius: '4px' }}
+                value={locatorRoomId}
+                onChange={(e) => {
+                  setLocatorRoomId(e.target.value);
+                  setLocatorCourseCode('');
+                  setLocatorStudentRoll('');
+                }}
+                disabled={!plan || !plan.rooms || plan.rooms.length === 0}
+              >
+                <option value="">-- Choose Room --</option>
+                {(plan?.rooms || [])
+                  .filter((r) => (r.seated || 0) > 0)
+                  .map((r) => (
+                    <option key={r.room_id} value={r.room_id}>
+                      {r.room_name} ({r.seated || 0} seated)
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            {/* 3. Course */}
+            <div>
+              <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#475569', marginBottom: '3px' }}>
+                3. Course:
+              </label>
+              <select
+                className="form-control"
+                style={{ fontSize: '0.78rem', height: '32px', border: '1px solid #cbd5e1', borderRadius: '4px' }}
+                value={locatorCourseCode}
+                onChange={(e) => {
+                  setLocatorCourseCode(e.target.value);
+                  setLocatorStudentRoll('');
+                }}
+                disabled={!locatorRoomId}
+              >
+                <option value="">-- Choose Course --</option>
+                {locatorAvailableCourses.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} ({c.count} students)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 4. Student */}
+            <div>
+              <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#475569', marginBottom: '3px' }}>
+                4. Student:
+              </label>
+              <select
+                className="form-control"
+                style={{ fontSize: '0.78rem', height: '32px', border: '1px solid #cbd5e1', borderRadius: '4px' }}
+                value={locatorStudentRoll}
+                onChange={(e) => {
+                  const roll = e.target.value;
+                  setLocatorStudentRoll(roll);
+                  if (roll) handleLocateStudent(roll);
+                }}
+                disabled={!locatorCourseCode}
+              >
+                <option value="">-- Choose Student --</option>
+                {locatorAvailableStudents.map((st) => (
+                  <option key={st.roll} value={st.roll}>
+                    {st.roll} &bull; Col {st.colNo}, Row {st.rowNo}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {highlightedDesk && (
+            <div
+              style={{
+                marginTop: '0.65rem',
+                padding: '6px 12px',
+                background: '#fef08a',
+                border: '1px solid #eab308',
+                borderRadius: '6px',
+                fontSize: '0.82rem',
+                color: '#713f12',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <span>🎯 Desk Highlighted:</span>
+              <span>
+                Room <strong>{highlightedDesk.roomName}</strong> &bull; Column <strong>{highlightedDesk.colNo}</strong> &bull; Row <strong>{highlightedDesk.rowNo}</strong> (Roll: {highlightedDesk.roll})
+              </span>
+            </div>
+          )}
         </div>
       )}
 

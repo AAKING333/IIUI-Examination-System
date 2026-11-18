@@ -577,40 +577,42 @@ def seating_xlsx(plan):
         ws = wb.create_sheet(title=room["room_name"][:31])
         sheet = room["seating_sheet"]
         ncols = room["columns"]
+        ecr_str = f"ECR Slot Incharge: {plan.get('ecr_slot_incharge') or plan.get('ecr_incharge') or 'ECR Relief Team'}"
         for i, text in enumerate([
                 "INTERNATIONAL ISLAMIC UNIVERSITY",
                 "DEPARTMENT OF COMPUTER SCIENCE & INFORMATION TECHNOLOGY",
                 "SEATING ARRANGEMENT",
                 f"Date: {_fmt_date(plan['date'])}",
                 f"Time Slot: {_format_time_range_12(plan.get('start_time', ''), plan.get('end_time', ''))}",
-                f"Room No.: {room['room_name']}"], start=1):
+                f"Room No.: {room['room_name']}",
+                ecr_str], start=1):
             ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=ncols)
             c = ws.cell(row=i, column=1, value=text)
             c.font = TITLE_FONT if i <= 3 else Font(name="Times New Roman", bold=True, size=11)
             c.alignment = CENTER_ALIGN
         # Head row: Column 01, Column 02, ...
-        ws.row_dimensions[7].height = 24
+        ws.row_dimensions[8].height = 24
         for j, col in enumerate(sheet["columns"], start=1):
-            c = ws.cell(row=7, column=j, value=f"Column {col['column_no']:02d}")
+            c = ws.cell(row=8, column=j, value=f"Column {col['column_no']:02d}")
             c.font = HEADER_FONT
             c.fill = HEADER_FILL
             c.alignment = CENTER_ALIGN
             c.border = CELL_BORDER
         # Sub-head row: CS 201 - [teachername]
-        ws.row_dimensions[8].height = 28
+        ws.row_dimensions[9].height = 28
         for j, col in enumerate(sheet["columns"], start=1):
             val = col.get("paper_header") or col.get("paper", "")
-            c = ws.cell(row=8, column=j, value=val)
+            c = ws.cell(row=9, column=j, value=val)
             c.font = Font(name="Times New Roman", bold=True, size=10)
             c.alignment = CENTER_ALIGN
             c.border = CELL_BORDER
         # Roll numbers, Row 1 down each column (keeping full room rows so empty chairs show cleanly).
         max_rows = max([room.get("rows", 0)] + [len(c["roll_nos"]) for c in sheet["columns"]], default=0)
         for r in range(max_rows):
-            ws.row_dimensions[9 + r].height = 20
+            ws.row_dimensions[10 + r].height = 20
             for j, col in enumerate(sheet["columns"], start=1):
                 v = col["roll_nos"][r] if r < len(col["roll_nos"]) else ""
-                c = ws.cell(row=9 + r, column=j, value=v)
+                c = ws.cell(row=10 + r, column=j, value=v)
                 c.alignment = CENTER_ALIGN
                 c.border = CELL_BORDER
                 if str(v).strip().lower() == "buffer":

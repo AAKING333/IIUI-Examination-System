@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import Modal from '../components/Modal.jsx';
+import { extractErrorMessage } from '../services/apiClient.js';
 
 export default function CoursesManagement({ courses = [], onRefresh, showBanner }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -40,14 +41,34 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.code.trim() || !formData.title.trim()) {
-      showBanner('Course code and title are required.', 'danger');
+    const cleanCode = (formData.code || '').trim().toUpperCase();
+    const cleanTitle = (formData.title || '').trim();
+
+    if (!cleanCode) {
+      showBanner('Validation Error: Course code is required.', 'danger');
+      return;
+    }
+    if (cleanCode.length < 2 || !/[A-Za-z]/.test(cleanCode)) {
+      showBanner('Validation Error: Course code must contain letters (e.g. CS101).', 'danger');
+      return;
+    }
+    if (!cleanTitle || cleanTitle.length < 3) {
+      showBanner('Validation Error: Course title must be at least 3 characters long.', 'danger');
+      return;
+    }
+    if (!/[A-Za-z]/.test(cleanTitle)) {
+      showBanner('Validation Error: Course title must contain letters and cannot be purely numeric.', 'danger');
       return;
     }
 
     const cr = parseInt(formData.credit_hours, 10);
     if (isNaN(cr) || cr < 1 || cr > 6) {
-      showBanner('Credit hours must be between 1 and 6.', 'danger');
+      showBanner('Validation Error: Credit hours must be an integer between 1 and 6.', 'danger');
+      return;
+    }
+
+    if (!editingCourse && courses.some((c) => c.code.toUpperCase() === cleanCode)) {
+      showBanner(`Validation Error: Course with code '${cleanCode}' already exists.`, 'danger');
       return;
     }
 
@@ -58,31 +79,37 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title: formData.title.trim(),
+            title: cleanTitle,
             credit_hours: cr,
             is_lab: Boolean(formData.is_lab),
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(errData, 'Course update failed.'));
+        }
         showBanner(`Course ${editingCourse.code} updated successfully.`, 'success');
       } else {
         const res = await fetch('/api/courses', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            code: formData.code.trim().toUpperCase(),
-            title: formData.title.trim(),
+            code: cleanCode,
+            title: cleanTitle,
             credit_hours: cr,
             is_lab: Boolean(formData.is_lab),
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
-        showBanner(`Course ${formData.code.toUpperCase()} created successfully.`, 'success');
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(extractErrorMessage(errData, 'Course creation failed.'));
+        }
+        showBanner(`Course ${cleanCode} created successfully.`, 'success');
       }
       setIsModalOpen(false);
       onRefresh();
     } catch (err) {
-      showBanner(`Operation failed: ${err.message}`, 'danger');
+      showBanner(err.message, 'danger');
     } finally {
       setIsSubmitting(false);
     }
@@ -92,12 +119,15 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
     setIsSubmitting(true);
     try {
       const res = await fetch(`/api/courses/${code}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(errData, 'Course deletion failed.'));
+      }
       showBanner(`Course ${code} deleted successfully.`, 'success');
       setDeleteConfirm(null);
       onRefresh();
     } catch (err) {
-      showBanner(`Delete failed: ${err.message}`, 'danger');
+      showBanner(err.message, 'danger');
     } finally {
       setIsSubmitting(false);
     }

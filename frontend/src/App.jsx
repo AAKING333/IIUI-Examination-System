@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import { extractErrorMessage } from './services/apiClient.js';
 import AdminTopbar from './components/AdminTopbar.jsx';
 import AdminSidebar from './components/AdminSidebar.jsx';
 import Modal from './components/Modal.jsx';
@@ -41,7 +42,7 @@ export default function App() {
   const showBanner = useCallback((message, type = 'info', options = {}) => {
     const toastType = type === 'danger' ? 'error' : type;
     const toastFn = typeof toast[toastType] === 'function' ? toast[toastType] : toast.info;
-    const defaultOptions = toastType === 'error' ? { autoClose: 6500 } : {};
+    const defaultOptions = toastType === 'error' ? { autoClose: 10000, closeOnClick: true, pauseOnHover: true } : { autoClose: 5000 };
     toastFn(message, { ...defaultOptions, ...options });
   }, []);
 
@@ -75,13 +76,31 @@ export default function App() {
   }, [loadInitialData]);
 
   // Generate Datesheet
-  const handleGenerateDatesheet = async () => {
+  const handleGenerateDatesheet = async (labMode = 'separate_days') => {
+    if (!slots || slots.length === 0) {
+      showBanner('Validation Error: Cannot generate datesheet: No time slots defined. Please configure time slots first.', 'danger');
+      return;
+    }
+    if (!courses || courses.length === 0) {
+      showBanner('Validation Error: Cannot generate datesheet: No courses defined in the academic catalog.', 'danger');
+      return;
+    }
+    if (!rooms || rooms.length === 0) {
+      showBanner('Validation Error: Cannot generate datesheet: No examination rooms configured.', 'danger');
+      return;
+    }
+    if (!students || students.length === 0) {
+      showBanner('Validation Error: Cannot generate datesheet: No students registered in the system.', 'danger');
+      return;
+    }
+
     setIsGenerating(true);
     try {
-      const res = await fetch('/api/datesheet/generate', { method: 'POST' });
+      const modeParam = encodeURIComponent(typeof labMode === 'string' ? labMode : 'separate_days');
+      const res = await fetch(`/api/datesheet/generate?lab_mode=${modeParam}`, { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Datesheet generation failed.');
+        throw new Error(extractErrorMessage(err, 'Datesheet generation failed.'));
       }
       const data = await res.json();
       setDatesheet(data);

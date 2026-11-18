@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api", tags=["Student Roll Slips"])
 
 
 @router.get("/roll-slip/{roll_no}")
-def get_student_roll_slip(roll_no: str):
+def get_student_roll_slip(roll_no: str, as_student: bool = Query(False, description="When true, enforces NR-07 30-minute pre-exam seating lock")):
     """Retrieve full official roll number slip details with assigned seats for a student."""
     clean_roll = roll_no.strip()
     if not datesheet_state.get("datesheet"):
@@ -22,7 +22,7 @@ def get_student_roll_slip(roll_no: str):
         if slots and store.get_courses():
             generate_datesheet_schedule()
 
-    return get_roll_slip_payload(clean_roll)
+    return get_roll_slip_payload(clean_roll, as_student=as_student)
 
 
 @router.get("/roll-slip/{roll_no}/pdf")

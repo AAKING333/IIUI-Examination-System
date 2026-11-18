@@ -120,8 +120,8 @@ def compile_student_exam_allocations() -> List[dict]:
     return records
 
 
-def get_roll_slip_payload(clean_roll: str) -> dict:
-    """Builds official university roll number slip data structure."""
+def get_roll_slip_payload(clean_roll: str, as_student: bool = False) -> dict:
+    """Builds official university roll number slip data structure with NR-07 30-min pre-exam seating lock."""
     student = store.get_student(clean_roll)
     if not student:
         for s in store.get_students():
@@ -141,13 +141,27 @@ def get_roll_slip_payload(clean_roll: str) -> dict:
     matched = next((r for r in records if r["roll_no"].lower() == clean_roll.lower()), None)
     papers = matched["papers"] if matched else []
 
+    now = datetime.now()
     for p in papers:
         try:
             p["day_name"] = datetime.strptime(p["date"], "%Y-%m-%d").strftime("%A")
+            slot_dt = datetime.strptime(f"{p['date']} {p['start_time']}", "%Y-%m-%d %H:%M")
+            diff_mins = (slot_dt - now).total_seconds() / 60.0
+            is_seat_released = (diff_mins <= 30.0) or (not as_student)
         except Exception:
-            p["day_name"] = ""
+            is_seat_released = True
 
-    halls = sorted(list(set(p["room"] for p in papers if p.get("room"))))
+        p["seat_released"] = is_seat_released
+        if not is_seat_released:
+            p["room_actual"] = p.get("room")
+            p["seat_actual"] = p.get("seat")
+            p["room"] = "Revealed 30 min before exam"
+            p["seat"] = "Revealed 30 min before exam"
+            p["seating_release_notice"] = "Desk and hall allocation will be revealed exactly 30 minutes before the exam start time (Rule NR-07)."
+        else:
+            p["seating_release_notice"] = "Active desk allocation verified."
+
+    halls = sorted(list(set(p["room"] for p in papers if p.get("room") and p.get("room") != "Revealed 30 min before exam")))
 
     return {
         "institution": {

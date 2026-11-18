@@ -38,16 +38,19 @@ def create_course(course: CourseIn):
 
 @router.put("/{code}")
 def update_course(code: str, course: CourseUpdateIn):
-    updated = store.update_course(
-        code=code,
-        title=course.title,
-        credit_hours=course.credit_hours,
-        is_lab=course.is_lab,
-    )
-    if not updated:
-        raise HTTPException(status_code=404, detail=f"Course '{code}' not found.")
-    seating_cache.clear()
-    return updated
+    try:
+        updated = store.update_course(
+            code=code,
+            title=course.title,
+            credit_hours=course.credit_hours,
+            is_lab=course.is_lab,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Course '{code}' not found.")
+        seating_cache.clear()
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/{code}")

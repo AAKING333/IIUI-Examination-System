@@ -148,8 +148,16 @@ export default function InvigilatorsPage({
 
   const handleSaveAdd = async (e) => {
     e.preventDefault();
-    if (!addDutyForm.slot_id || !addDutyForm.room_id || !addDutyForm.instructor) {
-      showBanner?.('Please select a slot, room, and invigilator.', 'danger');
+    if (!addDutyForm.slot_id) {
+      showBanner?.('Validation Error: Please select an examination time slot.', 'danger');
+      return;
+    }
+    if (!addDutyForm.room_id) {
+      showBanner?.('Validation Error: Please select an examination room.', 'danger');
+      return;
+    }
+    if (!addDutyForm.instructor?.trim()) {
+      showBanner?.('Validation Error: Please select an invigilator for this duty.', 'danger');
       return;
     }
     setIsSavingDuty(true);
@@ -177,7 +185,11 @@ export default function InvigilatorsPage({
 
   const handleSaveEdit = async (e) => {
     e.preventDefault();
-    if (!editDuty || !editForm.instructor) return;
+    if (!editDuty) return;
+    if (!editForm.instructor?.trim()) {
+      showBanner?.('Validation Error: Invigilator name cannot be empty.', 'danger');
+      return;
+    }
     setIsSavingDuty(true);
     try {
       await examOpsService.updateDuty(editDuty.id, editForm);
@@ -270,7 +282,21 @@ export default function InvigilatorsPage({
     async (e) => {
       e.preventDefault();
       const name = addFacultyForm.instructor.trim();
-      if (!name) return;
+      if (!name || name.length < 2) {
+        showBanner?.('Validation Error: Faculty member name must be at least 2 characters long.', 'danger');
+        return;
+      }
+      if (!/[A-Za-z]/.test(name)) {
+        showBanner?.('Validation Error: Faculty member name must contain letters.', 'danger');
+        return;
+      }
+      if (addFacultyForm.max_extra_duties !== '') {
+        const cap = Number(addFacultyForm.max_extra_duties);
+        if (isNaN(cap) || cap < 0 || cap > 10) {
+          showBanner?.('Validation Error: Extra duty cap must be between 0 and 10.', 'danger');
+          return;
+        }
+      }
       setSavingPolicy('__add__');
       try {
         await examOpsService.saveFacultyPolicy({

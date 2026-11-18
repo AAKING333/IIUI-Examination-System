@@ -51,20 +51,23 @@ def create_student(student: StudentIn):
 @router.put("/{roll_no}")
 def update_student(roll_no: str, student: StudentUpdateIn):
     enrols = [e.model_dump() for e in student.enrolments] if student.enrolments is not None else None
-    updated = store.update_student(
-        roll_no,
-        name=student.name,
-        father_name=student.father_name,
-        program=student.program,
-        batch=student.batch,
-        section=student.section,
-        faculty=student.faculty,
-        enrolments=enrols,
-    )
-    if not updated:
-        raise HTTPException(status_code=404, detail=f"Student '{roll_no}' not found.")
-    seating_cache.clear()
-    return updated
+    try:
+        updated = store.update_student(
+            roll_no,
+            name=student.name,
+            father_name=student.father_name,
+            program=student.program,
+            batch=student.batch,
+            section=student.section,
+            faculty=student.faculty,
+            enrolments=enrols,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Student '{roll_no}' not found.")
+        seating_cache.clear()
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/{roll_no}")
