@@ -1,0 +1,90 @@
+{
+  "midterm": {
+    "name": "Midterm Examination",
+    "days": 8,
+    "sessions": [
+      {
+        "start_time": "08:45",
+        "end_time": "10:15",
+        "label": "Morning 1",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "10:30",
+        "end_time": "12:00",
+        "label": "Morning 2",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "14:30",
+        "end_time": "16:00",
+        "label": "Afternoon 1",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "16:15",
+        "end_time": "17:45",
+        "label": "Afternoon 2",
+        "slot_type": "written"
+      }
+    ],
+    "friday_sessions": [
+      {
+        "start_time": "08:45",
+        "end_time": "10:15",
+        "label": "Morning 1",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "10:30",
+        "end_time": "12:00",
+        "label": "Morning 2",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "14:45",
+        "end_time": "16:15",
+        "label": "Afternoon 1",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "16:30",
+        "end_time": "18:00",
+        "label": "Afternoon 2",
+        "slot_type": "written"
+      }
+    ]
+  },
+  "terminal": {
+    "name": "Terminal Examination",
+    "days": 15,
+    "sessions": [
+      {
+        "start_time": "08:45",
+        "end_time": "11:45",
+        "label": "Morning",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "14:30",
+        "end_time": "17:30",
+        "label": "Afternoon",
+        "slot_type": "written"
+      }
+    ],
+    "friday_sessions": [
+      {
+        "start_time": "08:45",
+        "end_time": "11:45",
+        "label": "Morning",
+        "slot_type": "written"
+      },
+      {
+        "start_time": "14:45",
+        "end_time": "17:45",
+        "label": "Afternoon",
+        "slot_type": "written"
+      }
+    ]
+  }
+}
