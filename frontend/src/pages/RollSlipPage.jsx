@@ -11,6 +11,9 @@ export default function RollSlipPage({ showBanner }) {
   const [isLoadingSlip, setIsLoadingSlip] = useState(false);
   const [slipError, setSlipError] = useState(null);
   const [asStudentMode, setAsStudentMode] = useState(false);
+  const [scopeProgram, setScopeProgram] = useState('');
+  const [scopeBatch, setScopeBatch] = useState('');
+  const [scopeSection, setScopeSection] = useState('');
 
   // Load students directory for live picker
   useEffect(() => {
@@ -52,19 +55,58 @@ export default function RollSlipPage({ showBanner }) {
     }
   };
 
-  // Filter student matches based on searchQuery
+  const scopePrograms = useMemo(
+    () => Array.from(new Set(students.map((s) => s.program).filter(Boolean))).sort(),
+    [students]
+  );
+  const scopeBatches = useMemo(
+    () => Array.from(new Set(students
+      .filter((s) => !scopeProgram || s.program === scopeProgram)
+      .map((s) => s.batch)
+      .filter(Boolean))).sort().reverse(),
+    [students, scopeProgram]
+  );
+  const scopeSections = useMemo(
+    () => Array.from(new Set(students
+      .filter((s) => (!scopeProgram || s.program === scopeProgram) && (!scopeBatch || s.batch === scopeBatch))
+      .map((s) => s.section)
+      .filter(Boolean))).sort(),
+    [students, scopeProgram, scopeBatch]
+  );
+
+  const scopedStudents = useMemo(
+    () => students.filter(
+      (s) =>
+        (!scopeProgram || s.program === scopeProgram)
+        && (!scopeBatch || s.batch === scopeBatch)
+        && (!scopeSection || s.section === scopeSection)
+    ),
+    [students, scopeProgram, scopeBatch, scopeSection]
+  );
+
+  // Filter student matches based on searchQuery within the selected programme scope
   const filteredStudents = useMemo(() => {
     if (!searchQuery.trim()) {
-      return students.slice(0, 12);
+      return scopedStudents.slice(0, 12);
     }
     const q = searchQuery.toLowerCase().trim();
-    return students.filter(
+    return scopedStudents.filter(
       (s) =>
         s.roll_no.toLowerCase().includes(q) ||
         s.name.toLowerCase().includes(q) ||
         (s.batch && s.batch.toLowerCase().includes(q))
     ).slice(0, 24);
-  }, [students, searchQuery]);
+  }, [scopedStudents, searchQuery]);
+
+  const zipUrl = useMemo(() => {
+    if (!scopeProgram || !scopeBatch || !scopeSection) return '';
+    const params = new URLSearchParams({
+      program: scopeProgram,
+      batch: scopeBatch,
+      section: scopeSection,
+    });
+    return `/api/roll-slips/section-zip?${params.toString()}`;
+  }, [scopeProgram, scopeBatch, scopeSection]);
 
   const handleSelectStudent = (s) => {
     setSelectedRollNo(s.roll_no);
@@ -87,9 +129,6 @@ export default function RollSlipPage({ showBanner }) {
       <div className="itms-dash__pageHeader no-print">
         <div>
           <h1 className="itms-dash__pageTitle">Student Roll Number Slips</h1>
-          <p className="itms-dash__pageSub">
-            Official IIUI examination admit cards with synchronized hall seating allocations, timetable, and conduct code.
-          </p>
         </div>
         <div className="toolbar__actions" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
           <label
@@ -118,7 +157,7 @@ export default function RollSlipPage({ showBanner }) {
               style={{ cursor: 'pointer' }}
             />
             <span style={{ fontSize: '0.82rem', fontWeight: 700, color: asStudentMode ? '#1e40af' : '#334155' }}>
-              📱 Student Mobile View (30m Lock)
+              Student Mobile View (30M Lock)
             </span>
           </label>
 
@@ -133,6 +172,73 @@ export default function RollSlipPage({ showBanner }) {
         </div>
       </div>
 
+      {/* Section bundle download */}
+      <div
+        className="card-table-wrapper no-print"
+        style={{ padding: '0.85rem 1.15rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}
+      >
+        <select
+          className="form-control"
+          style={{ width: 'auto', fontSize: '0.82rem', fontWeight: 600 }}
+          value={scopeProgram}
+          onChange={(e) => {
+            setScopeProgram(e.target.value);
+            setScopeBatch('');
+            setScopeSection('');
+          }}
+        >
+          <option value="">All Programs</option>
+          {scopePrograms.map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        <select
+          className="form-control"
+          style={{ width: 'auto', fontSize: '0.82rem', fontWeight: 600 }}
+          value={scopeBatch}
+          onChange={(e) => {
+            setScopeBatch(e.target.value);
+            setScopeSection('');
+          }}
+          disabled={!scopeProgram}
+        >
+          <option value="">{scopeProgram ? 'All Batches' : 'Select Program first'}</option>
+          {scopeBatches.map((b) => (
+            <option key={b} value={b}>{b}</option>
+          ))}
+        </select>
+        <select
+          className="form-control"
+          style={{ width: 'auto', fontSize: '0.82rem', fontWeight: 600 }}
+          value={scopeSection}
+          onChange={(e) => setScopeSection(e.target.value)}
+          disabled={!scopeBatch}
+        >
+          <option value="">{scopeBatch ? 'Select Section' : 'Select Batch first'}</option>
+          {scopeSections.map((s) => (
+            <option key={s} value={s}>Sec {s}</option>
+          ))}
+        </select>
+        <a
+          href={zipUrl || undefined}
+          className="btn btn--primary btn--sm"
+          download
+          aria-disabled={!zipUrl}
+          style={!zipUrl ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
+          onClick={(e) => {
+            if (!zipUrl) {
+              e.preventDefault();
+              showBanner('Choose a program, batch and section to download the section ZIP.', 'warning');
+            }
+          }}
+        >
+          Download Section ZIP
+        </a>
+        <span style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
+          {scopedStudents.length} student{scopedStudents.length === 1 ? '' : 's'} in scope
+        </span>
+      </div>
+
       {/* Student Picker Card (AAKING333 Style) */}
       <div className="card-table-wrapper no-print" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.85rem' }}>
@@ -140,9 +246,6 @@ export default function RollSlipPage({ showBanner }) {
             <h3 style={{ margin: 0, fontSize: '0.98rem', color: 'var(--iiui-navy)', fontWeight: 700 }}>
               Search &amp; Select Student
             </h3>
-            <p style={{ margin: '0.15rem 0 0', fontSize: '0.8rem', color: 'var(--itms-text-muted)' }}>
-              Enter student name, roll number, or select from the quick list below.
-            </p>
           </div>
 
           {slipData && (
@@ -298,7 +401,7 @@ export default function RollSlipPage({ showBanner }) {
               }}
             >
               <div>
-                <strong>🔒 Student Mobile View Active (IIUI NR-07 Protocol):</strong> Examination room and desk
+                <strong>Student Mobile View Active (IIUI NR-07 Protocol):</strong> Examination room and desk
                 allocations remain locked and become visible to students 30 minutes before each paper to prevent
                 unauthorized pre-arrangements.
               </div>
@@ -426,7 +529,7 @@ export default function RollSlipPage({ showBanner }) {
                     <td style={{ border: '1px solid #cbd5e1', padding: '6px', textAlign: 'center', fontWeight: 700, color: '#1e3a8a' }}>
                       {p.seat_released === false ? (
                         <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', padding: '2px 8px', borderRadius: '4px', fontSize: '0.74rem', fontWeight: 700 }}>
-                          🔒 30m Before
+                          Locked · 30M
                         </span>
                       ) : (
                         p.room || '—'

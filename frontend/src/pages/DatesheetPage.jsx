@@ -14,7 +14,6 @@ export default function DatesheetPage({
 
   // Instant Search filter
   const [searchQuery, setSearchQuery] = useState('');
-  const [labMode, setLabMode] = useState('separate_days');
 
   // Room type helper for visual color differentiation (Imran's Note & PRD v3.0)
   const isLabRoom = (rName) => /lab/i.test(rName || '');
@@ -197,10 +196,12 @@ export default function DatesheetPage({
 
       const sessions = [];
       slotMap.forEach((slotData) => {
-        const totalSessionStudents = slotData.entries.reduce(
-          (sum, e) => sum + (e.students || 0),
-          0
-        );
+        const sessionRolls = new Set();
+        slotData.entries.forEach((e) => {
+          (e.student_rolls || []).forEach((r) => r && sessionRolls.add(String(r).trim()));
+        });
+        const totalSessionStudents = sessionRolls.size
+          || slotData.entries.reduce((sum, e) => sum + (e.students || 0), 0);
 
         // Group by unique course_code
         const courseMap = new Map();
@@ -243,10 +244,12 @@ export default function DatesheetPage({
           const rooms = Array.from(roomSet);
           const roomStr = rooms.join(', ') || '—';
 
-          const courseStudents = centries.reduce(
-            (sum, e) => sum + (e.students || 0),
-            0
-          );
+          const courseRolls = new Set();
+          centries.forEach((e) => {
+            (e.student_rolls || []).forEach((r) => r && courseRolls.add(String(r).trim()));
+          });
+          const courseStudents = courseRolls.size
+            || centries.reduce((sum, e) => sum + (e.students || 0), 0);
 
           courses.push({
             course_code: ccode,
@@ -275,7 +278,12 @@ export default function DatesheetPage({
         });
       });
 
-      const totalDayStudents = sessions.reduce((sum, s) => sum + (s.session_total || 0), 0);
+      const dayRolls = new Set();
+      dayEntries.forEach((e) => {
+        (e.student_rolls || []).forEach((r) => r && dayRolls.add(String(r).trim()));
+      });
+      const totalDayStudents = dayRolls.size
+        || sessions.reduce((sum, s) => sum + (s.session_total || 0), 0);
 
       result.push({
         date: dateStr,
@@ -298,32 +306,12 @@ export default function DatesheetPage({
       <div className="itms-dash__pageHeader no-print">
         <div>
           <h1 className="itms-dash__pageTitle">Midterm Examination Datesheet</h1>
-          <p className="itms-dash__pageSub">
-            Official IIUI examination datesheet with synchronized room allocations and back-paper compliance.
-          </p>
         </div>
         <div className="toolbar__actions" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: '#f8fafc', padding: '3px 8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
-            <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--iiui-navy)', whiteSpace: 'nowrap' }}>
-              Lab Mode:
-            </label>
-            <select
-              value={labMode}
-              onChange={(e) => setLabMode(e.target.value)}
-              className="form-control"
-              style={{ fontSize: '0.78rem', padding: '3px 8px', height: '28px', border: '1px solid #94a3b8', borderRadius: '4px' }}
-              title="Select practical laboratory scheduling mode (NR-04)"
-            >
-              <option value="separate_days">Dedicated Lab Days (Separate)</option>
-              <option value="concurrent">Concurrent Labs</option>
-              <option value="separate_week">Separate Lab Week</option>
-            </select>
-          </div>
-
           <button
             type="button"
             className="btn btn--primary"
-            onClick={() => onGenerate(labMode)}
+            onClick={() => onGenerate()}
             disabled={isGenerating}
           >
             {isGenerating ? 'Generating Schedule...' : 'Generate Datesheet'}
@@ -467,7 +455,7 @@ export default function DatesheetPage({
                   {/* Date Header Row (Same to same as Reference Datesheet Row 7 + Total Day Candidates) */}
                   <tr className="datesheet-date-banner-row">
                     <td colSpan={7}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                         <strong>{dayGroup.date_formatted}</strong>
                         <span
                           style={{
@@ -663,7 +651,7 @@ export default function DatesheetPage({
                     <button
                       type="button"
                       className="btn btn--primary"
-                      onClick={onGenerate}
+                      onClick={() => onGenerate()}
                       disabled={isGenerating}
                     >
                       {isGenerating ? 'Generating Schedule...' : 'Generate Datesheet Now'}

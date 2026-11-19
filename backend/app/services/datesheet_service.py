@@ -44,15 +44,25 @@ def generate_datesheet_schedule(lab_mode: str = "separate_days") -> dict:
 
         diagnostics = "; ".join(
             f"{item['course_code']} ({item['students']} students): {item['reason']}"
-            for item in result["unplaced"][:5]
+            for item in result["unplaced"]
         )
-        err_msg = (
-            f"Scheduling Conflict: {unplaced_count} section paper(s) ({sample_codes}) could not be placed. "
-            f"Generation was aborted; no partial datesheet was published. "
-            f"Blocking details: {diagnostics}"
+        logger.error(
+            "Datesheet generation blocked by %d unplaced paper(s) [%s]: %s",
+            unplaced_count,
+            sample_codes,
+            diagnostics,
         )
-        logger.error(err_msg)
-        raise HTTPException(status_code=422, detail=err_msg)
+        hint = " Add more dates in Exam Slots and generate again."
+        if any(item.get("is_lab") for item in result["unplaced"]):
+            hint = " Add more dates, or regenerate slots with Lab Days set to Concurrent so labs share regular paper days."
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Datesheet not generated: {unplaced_count} paper(s) could not fit into the current "
+                f"{len({slot['date'] for slot in slots})} exam days."
+                + hint
+            ),
+        )
 
     sync_datesheet_rooms(result)
     new_state = database.publish_datesheet(result, datetime.datetime.now().isoformat())
@@ -61,6 +71,19 @@ def generate_datesheet_schedule(lab_mode: str = "separate_days") -> dict:
     seating_cache.clear()
     # A new datesheet invalidates every existing invigilation assignment.
     database.clear_invigilation_duties()
+    # Build the roster straight from the freshly generated seating plans so the
+    # invigilators are ready with the seating sheet. Manual duties are kept on
+    # later recalculations.
+    try:
+        from app.services.invigilation_service import generate_duties
+
+        roster = generate_duties(preserve_manual=True)
+        logger.info(
+            "Invigilation roster auto-generated: %s new duty assignment(s), %s manual kept.",
+            roster.get("generated_count", 0), roster.get("preserved_manual_count", 0),
+        )
+    except Exception:
+        logger.exception("Automatic invigilation roster generation failed; use Recalculate Roster.")
     logger.info(
         "Datesheet successfully generated: all %d papers scheduled.",
         len(datesheet_state["datesheet"]),

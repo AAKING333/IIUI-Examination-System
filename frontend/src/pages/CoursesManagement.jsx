@@ -13,9 +13,20 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
   });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [creditFilter, setCreditFilter] = useState('');
 
   const totalRegular = courses.reduce((acc, c) => acc + (c.regular_students || 0), 0);
   const totalBack = courses.reduce((acc, c) => acc + (c.back_students || 0), 0);
+
+  const creditOptions = React.useMemo(
+    () => Array.from(new Set(courses.map((c) => c.credit_hours || 3))).sort((a, b) => a - b),
+    [courses]
+  );
+
+  const visibleCourses = React.useMemo(
+    () => courses.filter((c) => !creditFilter || String(c.credit_hours || 3) === creditFilter),
+    [courses, creditFilter]
+  );
 
   const handleOpenAdd = () => {
     setEditingCourse(null);
@@ -138,9 +149,6 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
       <div className="itms-dash__pageHeader">
         <div>
           <h1 className="itms-dash__pageTitle">Academic Courses Directory</h1>
-          <p className="itms-dash__pageSub">
-            Official university courses catalog defining course codes, titles, and credit hours.
-          </p>
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
@@ -172,6 +180,25 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
         </article>
       </section>
 
+      <div className="toolbar" style={{ gap: '0.5rem' }}>
+        <select
+          className="form-control"
+          style={{ width: 'auto', fontSize: '0.82rem', fontWeight: 600 }}
+          value={creditFilter}
+          onChange={(e) => setCreditFilter(e.target.value)}
+        >
+          <option value="">All Credit Hours</option>
+          {creditOptions.map((cr) => (
+            <option key={cr} value={cr}>
+              {cr} Cr. Hrs
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: '0.8rem', color: 'var(--itms-text-muted)' }}>
+          {visibleCourses.length} of {courses.length} courses
+        </span>
+      </div>
+
       <div className="card-table-wrapper">
         <table className="data-table">
           <thead>
@@ -184,7 +211,7 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
             </tr>
           </thead>
           <tbody>
-            {courses.map((c) => (
+            {visibleCourses.map((c) => (
               <tr key={c.code}>
                 <td>
                   <span className="badge badge--info" style={{ fontWeight: 700, letterSpacing: '0.5px' }}>
@@ -235,10 +262,12 @@ export default function CoursesManagement({ courses = [], onRefresh, showBanner 
                 </td>
               </tr>
             ))}
-            {courses.length === 0 && (
+            {visibleCourses.length === 0 && (
               <tr>
                 <td colSpan={5} style={{ textAlign: 'center', padding: '2rem', color: 'var(--itms-text-muted)' }}>
-                  No courses registered yet.
+                  {courses.length === 0
+                    ? 'No courses registered yet.'
+                    : `No ${creditFilter} Cr. Hrs course found.`}
                 </td>
               </tr>
             )}

@@ -83,8 +83,31 @@ def sync_datesheet_rooms(state: dict) -> None:
             e["allocated_rooms"] = allocated_by_entry.get(id(e), [])
 
 
+def _mark_repeater_seats(plan: dict) -> None:
+    """Flags repeater (back-paper) seats and columns so the UI can colour them."""
+    for room in plan.get("rooms", []) or []:
+        for row in room.get("grid") or []:
+            for seat in row or []:
+                if not seat or seat.get("is_buffer"):
+                    continue
+                roll = str(seat.get("roll_no") or "").strip()
+                code = re.sub(r"-T\d+$", "", str(seat.get("course_code") or ""))
+                seat["is_back"] = bool(roll and code and enrolment_type(roll, code) == "back")
+        sheet = room.get("seating_sheet") or {}
+        for col in sheet.get("columns") or []:
+            code = re.sub(r"-T\d+$", "", str(col.get("paper") or ""))
+            back_rolls = []
+            if code:
+                for roll in col.get("roll_nos") or []:
+                    roll_text = str(roll or "").strip()
+                    if roll_text and roll_text.lower() != "buffer" and enrolment_type(roll_text, code) == "back":
+                        back_rolls.append(roll_text)
+            col["repeater_rolls"] = back_rolls
+
+
 def _attach_invigilators(plan: dict, slot_id: str) -> dict:
     """Attach current invigilation assignments to each room in a seating plan."""
+    _mark_repeater_seats(plan)
     duties = database.get_invigilation_duties(slot_id=slot_id)
     by_room = defaultdict(list)
     for duty in duties:
@@ -116,6 +139,32 @@ def _attach_invigilators(plan: dict, slot_id: str) -> dict:
     plan["assigned_room_count"] = sum(1 for room in plan.get("rooms", []) if room.get("invigilators"))
     plan["unassigned_room_count"] = sum(1 for room in plan.get("rooms", []) if not room.get("invigilators"))
     return plan
+
+
+def _roll_belongs_to_entry(roll: str, code: str, entry: dict) -> bool:
+    """Matches a student to a datesheet paper, honouring repeater paper sections."""
+    student = store.student_by_roll.get(roll)
+    if not student:
+        return False
+    paper = store.get_paper_section(roll, code)
+    if paper:
+        return (
+            paper.get("program") == entry.get("program")
+            and paper.get("batch") == entry.get("batch")
+            and paper.get("section") in entry.get("sections", [entry.get("section")])
+        )
+    return (
+        student.get("program") == entry.get("program")
+        and student.get("batch") == entry.get("batch")
+        and student.get("section") in entry.get("sections", [entry.get("section")])
+    )
+
+
+def _paper_teacher(entry: dict, code: str) -> str:
+    sections = entry.get("sections") or [entry.get("section", "")]
+    return store.get_instructor_for_paper(
+        entry.get("program", ""), entry.get("batch", ""), sections[0] if sections else "", code,
+    )
 
 
 def resolve_seating_plan(slot_id: str):
@@ -152,15 +201,14 @@ def resolve_seating_plan(slot_id: str):
             continue
         course = copy.deepcopy(course)
         if e.get("program") and e.get("batch") and e.get("section"):
+            teacher = _paper_teacher(e, e["course_code"])
             group_rolls = [
                 roll for roll in course.get("student_roll_numbers", [])
-                if (student := store.student_by_roll.get(roll))
-                and student.get("program") == e["program"]
-                and student.get("batch") == e["batch"]
-                and student.get("section") in e.get("sections", [e["section"]])
+                if _roll_belongs_to_entry(roll, e["course_code"], e)
                 and store.get_attendance_percent(roll, e["course_code"]) >= 75
-                and store.get_instructor_for_student_course(student, e["course_code"]) == e.get("instructor")
+                and teacher == e.get("instructor")
             ]
+            group_rolls.sort(key=lambda r: (0 if enrolment_type(r, e["course_code"]) == "regular" else 1, r))
             course["student_roll_numbers"] = group_rolls
             course["regular_roll_numbers"] = [
                 roll for roll in group_rolls if enrolment_type(roll, e["course_code"]) == "regular"
@@ -187,17 +235,23 @@ def resolve_seating_plan(slot_id: str):
 
         teacher_rolls = defaultdict(list)
         for e in e_list:
+            teacher = _paper_teacher(e, code)
             group_rolls = [
                 roll for roll in course.get("student_roll_numbers", [])
-                if (student := store.student_by_roll.get(roll))
-                and student.get("program") == e["program"]
-                and student.get("batch") == e["batch"]
-                and student.get("section") in e.get("sections", [e["section"]])
+                if _roll_belongs_to_entry(roll, code, e)
                 and store.get_attendance_percent(roll, code) >= 75
-                and store.get_instructor_for_student_course(student, code) == e.get("instructor")
+                and teacher == e.get("instructor")
             ]
+            group_rolls.sort(key=lambda r: (0 if enrolment_type(r, code) == "regular" else 1, r))
             inst = e.get("instructor") or course.get("instructor", "")
             teacher_rolls[inst].extend(group_rolls)
+
+        # Repeaters must sit after every regular student of the paper, across
+        # all sections/turn groups that share the same teacher.
+        for inst in teacher_rolls:
+            teacher_rolls[inst].sort(
+                key=lambda roll: (0 if enrolment_type(roll, code) == "regular" else 1, roll)
+            )
 
         if len(teacher_rolls) >= 2:
             for t_idx, (inst, rolls) in enumerate(teacher_rolls.items(), start=1):
@@ -326,6 +380,7 @@ def save_custom_seating_plan(payload: dict) -> dict:
     }
 
     timestamp = datetime.datetime.now().isoformat()
+    _mark_repeater_seats(plan)
     database.save_custom_seating_plan(slot_id, plan, timestamp)
     database.delete_invigilation_duties_for_slot(slot_id)
     plan = _attach_invigilators(plan, slot_id)
@@ -349,6 +404,14 @@ def regenerate_seating_plan(slot_id: str) -> dict:
     seating_cache.pop(slot_id, None)
     database.delete_invigilation_duties_for_slot(slot_id)
     plan = resolve_seating_plan(slot_id)
+    # Rebuild this slot's invigilation duties to match the new room layout.
+    try:
+        from app.services.invigilation_service import generate_duties
+
+        generate_duties(slot_ids_filter=[slot_id], preserve_manual=True)
+        plan = resolve_seating_plan(slot_id)
+    except Exception:
+        logger.exception("Automatic invigilation generation failed for slot %s.", slot_id)
     sync_datesheet_rooms(datesheet_state)
     database.publish_datesheet(datesheet_state, datetime.datetime.now().isoformat())
     return plan

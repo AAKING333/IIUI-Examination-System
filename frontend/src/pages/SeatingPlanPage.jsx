@@ -531,6 +531,11 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
     setBulkPlans([]);
   };
 
+  const dateOptionLabel = (dStr) => {
+    const idx = distinctDates.indexOf(dStr);
+    return idx >= 0 ? `Day ${idx + 1} · ${formatDateLabel(dStr)}` : formatDateLabel(dStr);
+  };
+
   const formatDateLabel = (dStr) => {
     try {
       const d = new Date(dStr + 'T00:00:00');
@@ -924,6 +929,10 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
           : (room.invigilation || []).length > 0
             ? room.invigilation
             : (room.invigilators || []).map((name) => ({ instructor: name, duty_type: 'hall' }));
+      const roomRepeaterCount = (sheet.columns || []).reduce(
+        (acc, col) => acc + (col.repeater_rolls || []).length,
+        0
+      );
 
       return (
         <div
@@ -1047,6 +1056,60 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                       </span>
                     );
                   })}
+                  {roomRepeaterCount > 0 && (
+                    <span
+                      style={{
+                        background: '#fde68a',
+                        color: '#78350f',
+                        border: '1px solid #f59e0b',
+                        padding: '1px 8px',
+                        borderRadius: '10px',
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: '7px',
+                          height: '7px',
+                          borderRadius: '50%',
+                          background: '#b45309',
+                          display: 'inline-block',
+                        }}
+                      />
+                      {roomRepeaterCount} repeater{roomRepeaterCount === 1 ? '' : 's'} &middot; gold seats
+                    </span>
+                  )}
+                  {hasBufferRow && bufferSeatsCount > 0 && (
+                    <span
+                      style={{
+                        background: '#e2e8f0',
+                        color: '#334155',
+                        border: '1px solid #94a3b8',
+                        padding: '1px 8px',
+                        borderRadius: '10px',
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: '7px',
+                          height: '7px',
+                          borderRadius: '50%',
+                          background: '#475569',
+                          display: 'inline-block',
+                        }}
+                      />
+                      {bufferSeatsCount} buffer seat{bufferSeatsCount === 1 ? '' : 's'} reserved
+                    </span>
+                  )}
                 </div>
               );
             })()}
@@ -1210,6 +1273,9 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                         highlightedDesk.roomId === room.room_id &&
                         highlightedDesk.colIdx === colIdx &&
                         highlightedDesk.rowIdx === ri;
+                      const isRepeater = Boolean(
+                        rollVal && !isBufferCell && (col.repeater_rolls || []).includes(rollVal)
+                      );
 
                       let cellClass = '';
                       if (isEditMode) {
@@ -1219,6 +1285,9 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                       }
                       if (isBufferCell) {
                         cellClass += ' seat-cell--buffer';
+                      }
+                      if (isRepeater) {
+                        cellClass += ' seat-cell--repeater';
                       }
 
                       return (
@@ -1238,16 +1307,24 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                               : isThisHighlighted
                                 ? '#fef08a'
                                 : isBufferCell
-                                  ? '#fffbeb'
-                                  : isVacant
-                                    ? '#fafafa'
-                                    : (courseTheme ? courseTheme.bg : 'transparent'),
-                            color: isBufferCell ? '#92400e' : (courseTheme && rollVal ? courseTheme.text : undefined),
+                                  ? '#e2e8f0'
+                                  : isRepeater
+                                    ? '#fde68a'
+                                    : isVacant
+                                      ? '#fafafa'
+                                      : (courseTheme ? courseTheme.bg : 'transparent'),
+                            color: isBufferCell
+                              ? '#334155'
+                              : isRepeater
+                                ? '#78350f'
+                                : (courseTheme && rollVal ? courseTheme.text : undefined),
                             boxShadow: isThisHighlighted
                               ? '0 0 0 3px #eab308, inset 0 0 8px #fef08a'
-                              : isBufferCell
-                                ? 'inset 0 0 0 1px #fde68a'
-                                : undefined,
+                              : isRepeater
+                                ? 'inset 0 0 0 2px #f59e0b'
+                                : isBufferCell
+                                  ? 'inset 0 0 0 2px #64748b'
+                                  : undefined,
                             padding: '4px 6px',
                             minWidth: '85px',
                             maxWidth: '120px',
@@ -1258,13 +1335,15 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                           title={
                             isBufferCell
                               ? 'Buffer seat (reserved in last row for repeaters and exam contingency)'
-                              : isEditMode
-                                ? rollVal
-                                  ? `Click to select ${rollVal} for move/swap`
-                                  : selectedSeat
-                                    ? `Click to move ${selectedSeat.roll} here`
-                                    : 'Empty seat'
-                                : undefined
+                              : isRepeater
+                                ? `Repeater (back paper) - ${rollVal}`
+                                : isEditMode
+                                  ? rollVal
+                                    ? `Click to select ${rollVal} for move/swap`
+                                    : selectedSeat
+                                      ? `Click to move ${selectedSeat.roll} here`
+                                      : 'Empty seat'
+                                  : undefined
                           }
                         >
                           {isBufferCell ? (
@@ -1275,9 +1354,9 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
                                 borderRadius: '4px',
                                 fontSize: '0.68rem',
                                 fontWeight: 700,
-                                backgroundColor: '#fef3c7',
-                                color: '#92400e',
-                                border: '1px solid #fde68a',
+                                backgroundColor: '#334155',
+                                color: '#ffffff',
+                                border: '1px solid #1e293b',
                                 letterSpacing: '0.02em',
                               }}
                             >
@@ -1308,9 +1387,6 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
         {/* Title row */}
         <div>
           <h1 className="itms-dash__pageTitle">Room Seating Plan Matrix &amp; Arrangements</h1>
-          <p className="itms-dash__pageSub">
-            Official DCS examination seating arrangement sheet with column rotation enforcing no same-course adjacent seating.
-          </p>
         </div>
 
         {/* Filters and action buttons row */}
@@ -1326,34 +1402,34 @@ export default function SeatingPlanPage({ slots = [], datesheet = { datesheet: [
           {/* Left filters: Date and Time */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--itms-text-muted)' }}>Date:</span>
+              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--itms-text-muted)' }}>Exam Day &amp; Date:</span>
               <select
                 className="form-control"
                 style={{ width: 'auto', fontWeight: 600, fontSize: '0.84rem', padding: '6px 10px' }}
                 value={selectedDate}
                 onChange={(e) => handleDateChange(e.target.value)}
-                title="Select examination date"
+                title="Select examination day and date"
               >
                 {distinctDates.map((d) => (
                   <option key={d} value={d}>
-                    {formatDateLabel(d)}
+                    {dateOptionLabel(d)}
                   </option>
                 ))}
               </select>
             </div>
 
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--itms-text-muted)' }}>Time:</span>
+              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--itms-text-muted)' }}>Session:</span>
               <select
                 className="form-control"
                 style={{ width: 'auto', fontWeight: 600, fontSize: '0.84rem', padding: '6px 10px' }}
                 value={selectedSlotId}
                 onChange={(e) => handleTimeChange(e.target.value)}
-                title="Select session time slot"
+                title="Select examination session slot"
               >
                 {availableSlotsForDate.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {formatTimeRange12(s.start_time, s.end_time)}
+                    {s.label ? `${s.label} · ${formatTimeRange12(s.start_time, s.end_time)}` : formatTimeRange12(s.start_time, s.end_time)}
                   </option>
                 ))}
               </select>

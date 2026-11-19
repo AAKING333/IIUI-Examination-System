@@ -669,7 +669,7 @@ def _slip_pdf(pdf, slip):
         pdf.set_font("Helvetica", "B", 11)
         pdf.cell(52, 7, label)
         pdf.set_font("Helvetica", "", 11)
-        pdf.cell(0, 7, str(value), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 7, _clean_pdf_text(value), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 7, "DETAIL OF COURSES, ALLOWED TO BE APPEARED IN EXAM FALL-2026",
@@ -688,11 +688,11 @@ def _slip_pdf(pdf, slip):
         if len(title) > 30:
             title = title[:27] + "..."
         formatted_time = _clean_pdf_text(_format_time_range_12(p.get("start_time", ""), p.get("end_time", "")))
-        vals = [str(i), p["course_code"], title, p["date"],
-                formatted_time, p.get("room", "—"),
-                p.get("seat", "—"), p.get("remarks", p.get("type", "")).title()]
+        vals = [str(i), p["course_code"], _clean_pdf_text(title), _clean_pdf_text(p["date"]),
+                formatted_time, _clean_pdf_text(p.get("room", "—")),
+                _clean_pdf_text(p.get("seat", "—")), _clean_pdf_text(p.get("remarks", p.get("type", "")).title())]
         for w, v in zip(widths, vals):
-            pdf.cell(w, 8, str(v), border=1, align="C" if w != 46 else "L")
+            pdf.cell(w, 8, v, border=1, align="C" if w != 46 else "L")
         pdf.ln()
     pdf.ln(4)
     pdf.set_font("Helvetica", "B", 11)

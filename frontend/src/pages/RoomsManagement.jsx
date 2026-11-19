@@ -159,9 +159,6 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
       <div className="itms-dash__pageHeader">
         <div>
           <h1 className="itms-dash__pageTitle">Examination Rooms &amp; Capacity Management</h1>
-          <p className="itms-dash__pageSub">
-            Configure physical exam halls/labs, departments, grid dimensions, regular capacity, reserve buffer, and invigilator requirements.
-          </p>
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
@@ -379,7 +376,6 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                 onChange={(e) => handleDimensionsChange(e.target.value, formData.columns)}
                 required
               />
-              <span className="form-hint">Physical room row count (1 to 15 rows).</span>
             </div>
             <div className="form-group">
               <label className="form-label">Number of Columns (Max 11)</label>
@@ -392,7 +388,6 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                 onChange={(e) => handleDimensionsChange(formData.rows, e.target.value)}
                 required
               />
-              <span className="form-hint">Physical room column count (1 to 11 columns).</span>
             </div>
           </div>
 
@@ -422,7 +417,7 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
                 disabled={formData.room_type === 'lab'}
               />
               <span className="form-hint">
-                Buffer seats reserved only for large halls (50+ capacity, e.g. Room 18 &amp; 26) hosting repeater courses.
+                Reserved for large halls (50+ capacity) hosting repeater courses.
               </span>
             </div>
           </div>
@@ -435,7 +430,6 @@ export default function RoomsManagement({ rooms = [], onRefresh, showBanner }) {
               value={`${Number(formData.capacity || 0) + Number(formData.reserve_capacity || 0)} seats`}
               readOnly
             />
-            <span className="form-hint">Regular capacity + reserve buffer.</span>
           </div>
         </form>
       </Modal>

@@ -39,9 +39,6 @@ export default function StudentVerificationPage({ showBanner }) {
       <div className="itms-dash__pageHeader no-print">
         <div>
           <h1 className="itms-dash__pageTitle">Student Examination Rosters &amp; Seating Verification</h1>
-          <p className="itms-dash__pageSub">
-            Administrative inspection of allocated examination halls, assigned desks, and paper registration compliance.
-          </p>
         </div>
       </div>
 

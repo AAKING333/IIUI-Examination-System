@@ -77,6 +77,9 @@ class SQLiteDatabase:
                     course_code TEXT NOT NULL REFERENCES courses(code) ON DELETE CASCADE,
                     type TEXT NOT NULL CHECK(type IN ('regular', 'back')),
                     attendance_percent REAL NOT NULL DEFAULT 100,
+                    paper_program TEXT NOT NULL DEFAULT '',
+                    paper_batch TEXT NOT NULL DEFAULT '',
+                    paper_section TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(roll_no, course_code)
                 );
                 CREATE TABLE IF NOT EXISTS time_slots (
@@ -152,6 +155,11 @@ class SQLiteDatabase:
                 connection.execute(
                     "ALTER TABLE enrolments ADD COLUMN attendance_percent REAL NOT NULL DEFAULT 100"
                 )
+            for column in ("paper_program", "paper_batch", "paper_section"):
+                if column not in enrolment_columns:
+                    connection.execute(
+                        f"ALTER TABLE enrolments ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                    )
 
             # Invigilation roster migrations.  Existing installations may have
             # the original table without manual-override metadata.
@@ -184,10 +192,8 @@ class SQLiteDatabase:
             # split-lab case.
             connection.execute("DROP INDEX IF EXISTS idx_invigilation_slot_instructor")
 
-            # Buffer seats rule: buffer seats only in large rooms (capacity >= 50, e.g. Room 18 and Room 26).
-            # Smaller rooms (< 50) and labs must have 0 reserve capacity.
-            connection.execute("UPDATE rooms SET reserve_capacity = 0 WHERE capacity < 50 OR room_type = 'lab'")
-            connection.execute("UPDATE rooms SET reserve_capacity = 10 WHERE capacity >= 50 AND room_type != 'lab'")
+            # Buffer seats are configured per room (Room 26 +5, Room 18 +5) and
+            # must not be overwritten when the database is opened.
 
     def load_master_data(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         with self.connect() as connection:
@@ -211,11 +217,19 @@ class SQLiteDatabase:
                 "SELECT roll_no, name, father_name, program, batch, section, faculty FROM students"
             )]
             enrolments: Dict[str, List[Dict[str, str]]] = {}
-            for row in connection.execute("SELECT roll_no, course_code, type, attendance_percent FROM enrolments"):
-                enrolments.setdefault(row["roll_no"], []).append({
+            for row in connection.execute(
+                "SELECT roll_no, course_code, type, attendance_percent, "
+                "paper_program, paper_batch, paper_section FROM enrolments"
+            ):
+                item = {
                     "course": row["course_code"], "type": row["type"],
                     "attendance_percent": row["attendance_percent"],
-                })
+                }
+                if row["paper_program"]:
+                    item["paper_program"] = row["paper_program"]
+                    item["paper_batch"] = row["paper_batch"]
+                    item["paper_section"] = row["paper_section"]
+                enrolments.setdefault(row["roll_no"], []).append(item)
             for student in students:
                 student["enrolments"] = enrolments.get(student["roll_no"], [])
                 student["courses"] = [item["course"] for item in student["enrolments"]]
@@ -279,10 +293,13 @@ class SQLiteDatabase:
                 ) for item in store.instructor_assignments],
             )
             connection.executemany(
-                "INSERT INTO enrolments (roll_no, course_code, type, attendance_percent) VALUES (?, ?, ?, ?)",
+                "INSERT INTO enrolments (roll_no, course_code, type, attendance_percent, "
+                "paper_program, paper_batch, paper_section) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [(
                     student["roll_no"], item["course"], item.get("type", "regular"),
                     item.get("attendance_percent", 100),
+                    item.get("paper_program", ""), item.get("paper_batch", ""),
+                    item.get("paper_section", ""),
                 ) for student in store.students for item in student.get("enrolments", [])],
             )
             connection.executemany(

@@ -32,12 +32,13 @@
   --iiui-gold: #c9a227;
   --iiui-gold-600: #a8861d;
 
-  /* Surfaces */
-  --itms-bg: #f4f6f5;
-  --itms-surface: #ffffff;
-  --itms-surface-muted: #f8faf9;
-  --itms-border: #e3e8e6;
-  --itms-border-strong: #cbd5d1;
+  /* Surfaces — warm institutional paper tone */
+  --itms-bg: #f5f3ee;
+  --itms-surface: #fffdf9;
+  --itms-surface-muted: #f8f6ef;
+  --itms-surface-raised: #ffffff;
+  --itms-border: #e6e2d7;
+  --itms-border-strong: #d3cec0;
 
   /* Text */
   --itms-text: #0f172a;
@@ -82,5 +83,22 @@ body {
   background-color: var(--itms-bg);
   color: var(--itms-text);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Visible keyboard focus on every interactive primitive. */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--iiui-green-400);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 

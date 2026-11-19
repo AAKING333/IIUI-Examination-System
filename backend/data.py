@@ -9,8 +9,12 @@ Provides in-memory CRUD operations for:
 """
 import copy
 import datetime
+import json
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from database import database
+
+_REAL_SEED_PATH = Path(__file__).with_name("seed_fall2026.json")
 
 FIRST_NAMES = [
     "Ahmed", "Ayesha", "Bilal", "Fatima", "Hassan", "Hina", "Usman", "Zainab",
@@ -587,6 +591,8 @@ class DataStore:
         self.course_by_code: Dict[str, Dict[str, Any]] = {}
         self.enrolment_type_map: Dict[tuple, str] = {}
         self.attendance_map: Dict[tuple, float] = {}
+        # (roll, course) -> paper cohort for repeaters who sit with another batch
+        self.paper_section_map: Dict[tuple, Dict[str, str]] = {}
         persisted = database.load_master_data()
         if persisted:
             self.rooms = persisted["rooms"]
@@ -600,135 +606,85 @@ class DataStore:
             self.save()
 
     def reset_to_seed(self):
+        """Rebuild the master data from the real Fall 2026 enrollment master.
+
+        Rooms and section sizes come from the DCS Male midterm seating plans and
+        batch rosters. Registration numbers, names, course enrolments, repeaters
+        and instructor allocations are the real Fall 2026 records.
+        """
         self.rooms = [
-            {"id": "R25", "name": "Room 25", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
-            {"id": "R26", "name": "Room 26", "rows": 10, "columns": 7, "capacity": 70, "department": "CS", "reserve_capacity": 10, "invigilators_required": 3, "room_type": "hall"},
-            {"id": "R27", "name": "Room 27", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
-            {"id": "R18", "name": "Room 18", "rows": 10, "columns": 6, "capacity": 60, "department": "IT", "reserve_capacity": 10, "invigilators_required": 2, "room_type": "hall"},
+            {"id": "R26", "name": "Room 26", "rows": 10, "columns": 7, "capacity": 65, "department": "CS", "reserve_capacity": 5, "invigilators_required": 3, "room_type": "hall"},
+            {"id": "R18", "name": "Room 18", "rows": 10, "columns": 6, "capacity": 55, "department": "IT", "reserve_capacity": 5, "invigilators_required": 2, "room_type": "hall"},
             {"id": "R21", "name": "Room 21", "rows": 7, "columns": 5, "capacity": 35, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
+            {"id": "R25", "name": "Room 25", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
+            {"id": "R27", "name": "Room 27", "rows": 7, "columns": 5, "capacity": 35, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
             {"id": "R28", "name": "Room 28", "rows": 7, "columns": 5, "capacity": 35, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "hall"},
-            {"id": "LAB-2", "name": "Lab 2", "rows": 5, "columns": 5, "capacity": 25, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
-            {"id": "LAB-3", "name": "Lab 3", "rows": 5, "columns": 5, "capacity": 25, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
-            {"id": "LAB-4", "name": "Lab 4", "rows": 5, "columns": 5, "capacity": 25, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
-            {"id": "LAB-5", "name": "Lab 5", "rows": 5, "columns": 5, "capacity": 25, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
+            {"id": "LAB-2", "name": "Lab 2", "rows": 4, "columns": 8, "capacity": 32, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
+            {"id": "LAB-3", "name": "Lab 3", "rows": 4, "columns": 8, "capacity": 32, "department": "CS", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
+            {"id": "LAB-4", "name": "Lab 4", "rows": 4, "columns": 8, "capacity": 32, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
+            {"id": "LAB-5", "name": "Lab 5", "rows": 4, "columns": 8, "capacity": 32, "department": "IT", "reserve_capacity": 0, "invigilators_required": 1, "room_type": "lab"},
         ]
+
+        seed = json.loads(_REAL_SEED_PATH.read_text(encoding="utf-8"))
+
         self.courses = [
-            {"code": code, "title": title, "credit_hours": 3, "is_lab": is_lab,
-             "student_roll_numbers": [], "regular_roll_numbers": [], "back_roll_numbers": []}
-            for code, title, _, _, is_lab in _REFERENCE_COURSES
+            {
+                "code": code,
+                "title": meta.get("title") or code,
+                "credit_hours": int(meta.get("credit_hours", 3)),
+                "is_lab": bool(meta.get("is_lab")),
+                "student_roll_numbers": [],
+                "regular_roll_numbers": [],
+                "back_roll_numbers": [],
+                "eligible_roll_numbers": [],
+            }
+            for code, meta in seed["courses"].items()
         ]
+
         self.instructor_assignments = []
+        for program, batch, section, code, instructor in seed["assignments"]:
+            self.instructor_assignments.append({
+                "id": f"IA{len(self.instructor_assignments) + 1}",
+                "program": program,
+                "batch": batch,
+                "section": section,
+                "course_code": code,
+                "instructor": instructor,
+            })
+
         self.students = []
+        for record in seed["students"]:
+            enrolments = [
+                {"course": code, "type": "regular", "attendance_percent": 100}
+                for code in record.get("regular", [])
+            ]
+            for item in record.get("back", []):
+                enrolments.append({
+                    "course": item["code"],
+                    "type": "back",
+                    "attendance_percent": 100,
+                    "paper_program": item["program"],
+                    "paper_batch": item["batch"],
+                    "paper_section": item["section"],
+                })
+            self.students.append({
+                "roll_no": record["roll"],
+                "name": record["name"],
+                "father_name": "",
+                "program": record["program"],
+                "batch": record["batch"],
+                "section": record["section"],
+                "faculty": "Computing and Information Technology",
+                "courses": [item["course"] for item in enrolments],
+                "enrolments": enrolments,
+            })
+
+        # Real midterm dates from the official Fall 2026 datesheet.
         self.time_slots = []
-
-        section_counts = {}
-        for program, batch, total, _, sections in _COHORTS:
-            year = int("20" + batch[1:])
-            counts = [total // len(sections)] * len(sections)
-            for index in range(total % len(sections)):
-                counts[index] += 1
-            section_counts[(program, batch)] = dict(zip(sections, counts))
-            major = "CS" if program == "BSCS" else "IT"
-            for section, count in zip(sections, counts):
-                for position in range(count):
-                    ordinal = sum(section_counts[(program, batch)][s] for s in sections[:sections.index(section)]) + position + 1
-                    roll = f"{year}-{major}-{ordinal:03d}"
-                    name_index = len(self.students)
-                    self.students.append({
-                        "roll_no": roll,
-                        "name": f"{FIRST_NAMES[name_index % len(FIRST_NAMES)]} {LAST_NAMES[name_index % len(LAST_NAMES)]}",
-                        "father_name": f"{FATHER_NAMES[name_index % len(FATHER_NAMES)]} {LAST_NAMES[(name_index + 3) % len(LAST_NAMES)]}",
-                        "program": program,
-                        "batch": batch,
-                        "section": section,
-                        "faculty": "Computing and Information Technology",
-                        "courses": [],
-                        "enrolments": [],
-                    })
-
-        # Dedicated Instructor Assignments directly from Fall 2026 timetable
-        self.instructor_assignments = []
-        for (prog, batch, sec), list_courses in _TIMETABLE_ENROLMENTS.items():
-            for code, inst in list_courses:
-                self.instructor_assignments.append({
-                    "id": f"IA{len(self.instructor_assignments) + 1}",
-                    "program": prog,
-                    "batch": batch,
-                    "section": sec,
-                    "course_code": code,
-                    "instructor": inst,
-                })
-
-        # Premedical M101 assignments for BSCS F26 and BSIT F26 with Dr. Qamar Abbas
-        for prog in ("BSCS", "BSIT"):
-            for sec in ("A", "B"):
-                self.instructor_assignments.append({
-                    "id": f"IA{len(self.instructor_assignments) + 1}",
-                    "program": prog,
-                    "batch": "F26",
-                    "section": sec,
-                    "course_code": "M101",
-                    "instructor": "Dr. Qamar Abbas",
-                })
-
-        # E-Commerce SE346 instructor assignments for Mr. Abid Jamil across cohorts
-        for prog in ("BSCS", "BSIT"):
-            for batch in ("F23", "F24"):
-                cohort_secs = ("A", "B", "C") if (prog, batch) == ("BSCS", "F23") else ("A", "B")
-                for sec in cohort_secs:
-                    self.instructor_assignments.append({
-                        "id": f"IA{len(self.instructor_assignments) + 1}",
-                        "program": prog,
-                        "batch": batch,
-                        "section": sec,
-                        "course_code": "SE346",
-                        "instructor": "Mr. Abid Jamil",
-                    })
-
-        # Enroll each student in their exact batch & section courses from timetable
-        for student in self.students:
-            key = (student["program"], student["batch"], student["section"])
-            assigned = _TIMETABLE_ENROLMENTS.get(key, [])
-            for code, _ in assigned:
-                student["enrolments"].append({
-                    "course": code, "type": "regular", "attendance_percent": 100,
-                })
-                student["courses"].append(code)
-
-        # Premedical students (BSCS F26 Section A and BSIT F26 Section A) take M101 with Dr. Qamar Abbas
-        for s in [st for st in self.students if st["program"] == "BSCS" and st["batch"] == "F26" and st["section"] == "A"][:15]:
-            s["enrolments"].append({"course": "M101", "type": "regular", "attendance_percent": 100})
-            s["courses"].append("M101")
-        for s in [st for st in self.students if st["program"] == "BSIT" and st["batch"] == "F26" and st["section"] == "A"][:12]:
-            s["enrolments"].append({"course": "M101", "type": "regular", "attendance_percent": 100})
-            s["courses"].append("M101")
-
-        # E-Commerce SE346: Elective taken by random students across BSCS/BSIT F23 & F24
-        import random
-        rng = random.Random(42)
-        f23_cs_st = [st for st in self.students if st["program"] == "BSCS" and st["batch"] == "F23"]
-        f24_cs_st = [st for st in self.students if st["program"] == "BSCS" and st["batch"] == "F24"]
-        f23_it_st = [st for st in self.students if st["program"] == "BSIT" and st["batch"] == "F23"]
-        f24_it_st = [st for st in self.students if st["program"] == "BSIT" and st["batch"] == "F24"]
-        ecom_students = (
-            rng.sample(f23_cs_st, 18) +
-            rng.sample(f24_cs_st, 15) +
-            rng.sample(f23_it_st, 18) +
-            rng.sample(f24_it_st, 15)
-        )
-        for s in ecom_students:
-            s["enrolments"].append({"course": "SE346", "type": "regular", "attendance_percent": 100})
-            s["courses"].append("SE346")
-
-        # A small deterministic sample of repeaters exercises the back-paper workflow.
-        for index, student in enumerate(self.students):
-            if index % 31 == 0 and student["enrolments"]:
-                student["enrolments"][-1]["type"] = "back"
-
         sid = 1
-        exam_dates = ("2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-11-02")
+        exam_dates = ("2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-11-02", "2026-11-03", "2026-11-04")
         for date in exam_dates:
-            for slot_index, (start, end, label) in enumerate(_SLOT_TIMES):
+            for start, end, label in _SLOT_TIMES:
                 self.time_slots.append({
                     "id": f"S{sid}", "date": date, "start_time": start,
                     "end_time": end, "label": label,
@@ -753,6 +709,7 @@ class DataStore:
 
         self.enrolment_type_map.clear()
         self.attendance_map.clear()
+        self.paper_section_map.clear()
         for s in self.students:
             roll = s["roll_no"]
             enrols = s.get("enrolments", [])
@@ -762,6 +719,13 @@ class DataStore:
                 attendance = float(e.get("attendance_percent", 100))
                 self.enrolment_type_map[(roll, code)] = typ
                 self.attendance_map[(roll, code)] = attendance
+                paper_program = e.get("paper_program")
+                if paper_program:
+                    self.paper_section_map[(roll, code)] = {
+                        "program": paper_program,
+                        "batch": e.get("paper_batch", ""),
+                        "section": e.get("paper_section", "A"),
+                    }
                 if code in course_map:
                     course_map[code]["student_roll_numbers"].append(roll)
                     if attendance >= 75:
@@ -860,6 +824,28 @@ class DataStore:
 
         # 4. Fallback to first assigned instructor for this course
         return assgns[0]["instructor"].strip()
+
+    def get_instructor_for_paper(self, program: str, batch: str, section: str, course_code: str) -> str:
+        """Instructor assigned to a specific program/batch/section paper."""
+        prog = (program or "").strip().upper()
+        bat = (batch or "").strip().upper()
+        sec = (section or "").strip().upper()
+        c_code = (course_code or "").strip().upper()
+        assgns = [a for a in self.instructor_assignments if a["course_code"].upper() == c_code]
+        for a in assgns:
+            if a["program"].upper() == prog and a["batch"].upper() == bat and a["section"].upper() == sec:
+                return a["instructor"].strip()
+        for a in assgns:
+            if a["program"].upper() == prog and a["batch"].upper() == bat:
+                return a["instructor"].strip()
+        for a in assgns:
+            if a["program"].upper() == prog:
+                return a["instructor"].strip()
+        return ""
+
+    def get_paper_section(self, roll_no: str, course_code: str) -> Optional[Dict[str, str]]:
+        """Paper cohort for a repeater who sits with a different batch/section."""
+        return self.paper_section_map.get((roll_no, course_code))
 
     def get_attendance_percent(self, roll_no: str, course_code: str) -> float:
         return self.attendance_map.get((roll_no, course_code), 100.0)
@@ -1356,11 +1342,16 @@ class DataStore:
 
     def add_time_slot(self, date: str, start_time: str, end_time: str, label: str = "", slot_type: str = "written") -> Dict[str, Any]:
         try:
-            datetime.date.fromisoformat(date)
+            slot_date = datetime.date.fromisoformat(date)
             start_min = self._time_to_minutes(start_time)
             end_min = self._time_to_minutes(end_time)
         except ValueError as exc:
             raise ValueError(f"Invalid date or time: {exc}")
+        if slot_date < datetime.date.today():
+            raise ValueError(
+                f"Examination date {date} is in the past. "
+                f"Only today ({datetime.date.today().isoformat()}) or future dates are allowed."
+            )
         if end_min <= start_min:
             raise ValueError("Slot end time must be later than its start time.")
         for s in self.time_slots:
@@ -1391,11 +1382,16 @@ class DataStore:
         if not slot:
             return None
         try:
-            datetime.date.fromisoformat(date)
+            slot_date = datetime.date.fromisoformat(date)
             start_min = self._time_to_minutes(start_time)
             end_min = self._time_to_minutes(end_time)
         except ValueError as exc:
             raise ValueError(f"Invalid date or time: {exc}")
+        if slot_date < datetime.date.today():
+            raise ValueError(
+                f"Examination date {date} is in the past. "
+                f"Only today ({datetime.date.today().isoformat()}) or future dates are allowed."
+            )
         if end_min <= start_min:
             raise ValueError("Slot end time must be later than its start time.")
         for other in self.time_slots:
@@ -1440,14 +1436,24 @@ class DataStore:
         id_set = set(slot_ids)
         shifted = 0
         delta = datetime.timedelta(days=shift_days)
+        today = datetime.date.today()
+        planned = []
         for s in self.time_slots:
             if s["id"] in id_set:
                 try:
                     cur = datetime.date.fromisoformat(s["date"])
-                    s["date"] = (cur + delta).isoformat()
-                    shifted += 1
+                    target = cur + delta
+                    if target < today:
+                        raise ValueError(
+                            f"Cannot shift slot {s['id']} to {target.isoformat()} because it is in the past. "
+                            f"Only today ({today.isoformat()}) or future dates are allowed."
+                        )
+                    planned.append((s, target))
                 except ValueError:
-                    pass
+                    raise
+        for slot, target in planned:
+            slot["date"] = target.isoformat()
+            shifted += 1
         if shifted > 0:
             self.save()
         return shifted
@@ -1467,6 +1473,8 @@ class DataStore:
         break_minutes: int = 15,
         skip_weekends: bool = True,
         replace_existing: bool = False,
+        sessions_per_day: Optional[int] = None,
+        long_break_minutes: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         import datetime
 
@@ -1475,6 +1483,12 @@ class DataStore:
             d_end = datetime.date.fromisoformat(to_date.strip())
         except ValueError as e:
             raise ValueError(f"Invalid date format (must be YYYY-MM-DD): {e}")
+
+        if d_start < datetime.date.today():
+            raise ValueError(
+                f"From Date ({from_date}) is in the past. "
+                f"Only today ({datetime.date.today().isoformat()}) or future dates are allowed."
+            )
 
         if d_end < d_start:
             raise ValueError("Start date (From Date) cannot be greater than End date (To Date). From date must be earlier than or equal to To date.")
@@ -1500,11 +1514,35 @@ class DataStore:
             raise ValueError(f"Invalid time format: {e}")
 
         if duration_minutes <= 0:
-            raise ValueError("Duration must be greater than 0 minutes.")
-        if end_min <= start_min:
-            raise ValueError("Day end time must be later than start time.")
-        if (end_min - start_min) < duration_minutes:
-            raise ValueError(f"Day window ({end_min - start_min}m) is shorter than slot duration ({duration_minutes}m).")
+            raise ValueError("Paper duration must be greater than 0 minutes.")
+        if sessions_per_day is not None:
+            if sessions_per_day not in (2, 4):
+                raise ValueError("Daily sessions must be 4 (midterms) or 2 (terminal exams).")
+            if long_break_minutes is None:
+                raise ValueError("A long break between the morning and afternoon sessions is required (30 to 120 minutes).")
+            if not (30 <= long_break_minutes <= 120):
+                raise ValueError("The long break between morning and afternoon sessions must be between 30 and 120 minutes.")
+            morning_sessions = sessions_per_day // 2
+            session_windows = []
+            cursor = start_min
+            for index in range(sessions_per_day):
+                if index:
+                    cursor += long_break_minutes if index == morning_sessions else break_minutes
+                session_windows.append((cursor, cursor + duration_minutes))
+                cursor += duration_minutes
+            end_min = session_windows[-1][1]
+            if end_min > 24 * 60 - 1:
+                raise ValueError("Daily sessions finish after midnight. Reduce the paper duration or the long break.")
+        else:
+            if end_min <= start_min:
+                raise ValueError("Day end time must be later than start time.")
+            if (end_min - start_min) < duration_minutes:
+                raise ValueError(f"Day window ({end_min - start_min}m) is shorter than the paper duration ({duration_minutes}m).")
+            session_windows = []
+            cursor = start_min
+            while cursor + duration_minutes <= end_min:
+                session_windows.append((cursor, cursor + duration_minutes))
+                cursor += duration_minutes + break_minutes
 
         if replace_existing:
             self.time_slots.clear()
@@ -1523,11 +1561,8 @@ class DataStore:
                 continue
 
             date_str = curr_date.isoformat()
-            curr_slot_start = start_min
-            session_num = 1
 
-            while curr_slot_start + duration_minutes <= end_min:
-                curr_slot_end = curr_slot_start + duration_minutes
+            for session_num, (curr_slot_start, curr_slot_end) in enumerate(session_windows, start=1):
                 s_start_str = min_to_time(curr_slot_start)
                 s_end_str = min_to_time(curr_slot_end)
 
@@ -1543,8 +1578,9 @@ class DataStore:
                 if overlapping and not exists:
                     raise ValueError(f"Generated slot {date_str} {s_start_str}-{s_end_str} overlaps an existing slot.")
                 if not exists:
-                    label = f"Session {session_num}"
-                    if session_num == 1:
+                    if sessions_per_day == 2:
+                        label = "Morning" if session_num == 1 else "Afternoon"
+                    elif session_num == 1:
                         label = "Morning 1"
                     elif session_num == 2:
                         label = "Morning 2"
@@ -1554,6 +1590,8 @@ class DataStore:
                         label = "Afternoon 2"
                     elif session_num == 5:
                         label = "Evening 1"
+                    else:
+                        label = f"Session {session_num}"
 
                     slot_obj = {
                         "id": f"S{sid_counter}",
@@ -1566,9 +1604,6 @@ class DataStore:
                     self.time_slots.append(slot_obj)
                     new_slots.append(slot_obj)
                     sid_counter += 1
-
-                session_num += 1
-                curr_slot_start = curr_slot_end + break_minutes
 
             curr_date += one_day
 

@@ -21,53 +21,165 @@ router = APIRouter(prefix="/api/time-slots", tags=["Time Slots Management"])
 
 PRESETS_FILE = Path(__file__).resolve().parent.parent.parent / "presets_config.json"
 
+# Lab scheduling preference chosen when slots are generated.
+LAB_MODES = ("separate_days", "concurrent")
+DEFAULT_LAB_MODE = "separate_days"
+LAB_MODE_KEY = "lab_mode"
+
+# Fixed session rules: midterms run 4 sessions per day, terminal/final exams run 2.
+EXPECTED_DAILY_SESSIONS = {"midterm": 4, "terminal": 2}
+# Number of sessions before the long morning-to-afternoon break.
+MORNING_SESSIONS = {"midterm": 2, "terminal": 1}
+
+
+def _time_to_minutes(value: str) -> int:
+    hours, minutes = value.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def _minutes_to_time(value: int) -> str:
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def _validate_session_times(times: list) -> None:
+    previous_end = -1
+    for start, end, _, _ in times:
+        start_min = _time_to_minutes(start)
+        end_min = _time_to_minutes(end)
+        if not (0 <= start_min < end_min <= 24 * 60):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Preset session {start}-{end} must start and end within the same day.",
+            )
+        if start_min < previous_end:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Preset session {start}-{end} overlaps the session before it.",
+            )
+        previous_end = end_min
+
+
+def _apply_long_break(times: list, long_break_minutes: Optional[int], preset: str) -> list:
+    """Shift every afternoon session so the morning-to-afternoon gap is exactly the requested break."""
+    split = MORNING_SESSIONS.get(preset)
+    if not long_break_minutes or split is None or len(times) <= split:
+        return times
+    current_gap = _time_to_minutes(times[split][0]) - _time_to_minutes(times[split - 1][1])
+    delta = long_break_minutes - current_gap
+    if delta == 0:
+        return times
+    shifted = []
+    for index, (start, end, label, slot_type) in enumerate(times):
+        if index >= split:
+            start = _minutes_to_time(_time_to_minutes(start) + delta)
+            end = _minutes_to_time(_time_to_minutes(end) + delta)
+        shifted.append((start, end, label, slot_type))
+    _validate_session_times(shifted)
+    return shifted
+
+
+def _validate_session_count(preset: str, sessions: list) -> None:
+    expected = EXPECTED_DAILY_SESSIONS.get(preset)
+    if expected and len(sessions) != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The {preset.title()} preset must have exactly {expected} daily sessions "
+                f"(currently {len(sessions)}). Midterms are 4 sessions and terminal exams are 2 sessions."
+            ),
+        )
+
 DEFAULT_PRESET_TEMPLATES = {
     "midterm": {
         "name": "Midterm Examination",
         "days": 8,
+        "long_break_minutes": 120,
         "sessions": [
             {"start_time": "08:45", "end_time": "10:15", "label": "Morning 1", "slot_type": "written"},
             {"start_time": "10:30", "end_time": "12:00", "label": "Morning 2", "slot_type": "written"},
-            {"start_time": "14:30", "end_time": "16:00", "label": "Afternoon 1", "slot_type": "written"},
-            {"start_time": "16:15", "end_time": "17:45", "label": "Afternoon 2", "slot_type": "written"},
+            {"start_time": "14:00", "end_time": "15:30", "label": "Afternoon 1", "slot_type": "written"},
+            {"start_time": "15:45", "end_time": "17:15", "label": "Afternoon 2", "slot_type": "written"},
         ],
         "friday_sessions": [
             {"start_time": "08:45", "end_time": "10:15", "label": "Morning 1", "slot_type": "written"},
             {"start_time": "10:30", "end_time": "12:00", "label": "Morning 2", "slot_type": "written"},
-            {"start_time": "14:45", "end_time": "16:15", "label": "Afternoon 1", "slot_type": "written"},
-            {"start_time": "16:30", "end_time": "18:00", "label": "Afternoon 2", "slot_type": "written"},
+            {"start_time": "14:00", "end_time": "15:30", "label": "Afternoon 1", "slot_type": "written"},
+            {"start_time": "15:45", "end_time": "17:15", "label": "Afternoon 2", "slot_type": "written"},
         ],
     },
     "terminal": {
         "name": "Terminal Examination",
         "days": 18,
+        "long_break_minutes": 120,
         "sessions": [
             {"start_time": "08:45", "end_time": "11:45", "label": "Morning", "slot_type": "written"},
-            {"start_time": "14:30", "end_time": "17:30", "label": "Afternoon", "slot_type": "written"},
+            {"start_time": "13:45", "end_time": "16:45", "label": "Afternoon", "slot_type": "written"},
         ],
         "friday_sessions": [
             {"start_time": "08:45", "end_time": "11:45", "label": "Morning", "slot_type": "written"},
-            {"start_time": "14:45", "end_time": "17:45", "label": "Afternoon", "slot_type": "written"},
+            {"start_time": "13:45", "end_time": "16:45", "label": "Afternoon", "slot_type": "written"},
         ],
     },
 }
 
 
-def get_preset_templates() -> dict:
+def _read_config() -> dict:
     if PRESETS_FILE.exists():
         try:
             with open(PRESETS_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-                return {**DEFAULT_PRESET_TEMPLATES, **saved}
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
         except Exception:
-            pass
-    return copy.deepcopy(DEFAULT_PRESET_TEMPLATES)
+            return {}
+    return {}
+
+
+def get_lab_mode() -> str:
+    mode = _read_config().get(LAB_MODE_KEY)
+    return mode if mode in LAB_MODES else DEFAULT_LAB_MODE
+
+
+def save_lab_mode(mode: str) -> None:
+    if mode not in LAB_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Lab days must be either separate_days or concurrent.",
+        )
+    config = _read_config()
+    config[LAB_MODE_KEY] = mode
+    try:
+        with open(PRESETS_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not persist lab days setting: {e}")
+
+
+def apply_lab_days(lab_mode: str) -> None:
+    """Stamps every slot with its type: last 2 exam days are lab-only, or all days stay written."""
+    dates = sorted({slot["date"] for slot in store.time_slots})
+    lab_dates = set()
+    if lab_mode == "separate_days":
+        lab_days = 2 if len(dates) >= 7 else (1 if len(dates) >= 3 else 0)
+        if lab_days:
+            lab_dates = set(dates[-lab_days:])
+    for slot in store.time_slots:
+        slot["slot_type"] = "lab" if slot["date"] in lab_dates else "written"
+
+
+def get_preset_templates() -> dict:
+    templates = copy.deepcopy(DEFAULT_PRESET_TEMPLATES)
+    saved = _read_config()
+    if saved:
+        templates.update({key: value for key, value in saved.items() if key != LAB_MODE_KEY})
+    return templates
 
 
 def save_preset_templates(templates: dict) -> None:
+    config = _read_config()
+    config.update(templates)
     try:
         with open(PRESETS_FILE, "w", encoding="utf-8") as f:
-            json.dump(templates, f, indent=2)
+            json.dump(config, f, indent=2)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not persist presets: {e}")
 
@@ -75,6 +187,11 @@ def save_preset_templates(templates: dict) -> None:
 @router.get("/presets/templates")
 def get_presets_endpoint():
     return get_preset_templates()
+
+
+@router.get("/lab-mode")
+def get_lab_mode_endpoint():
+    return {"lab_mode": get_lab_mode()}
 
 
 @router.put("/presets/templates")
@@ -95,7 +212,18 @@ def save_presets_endpoint(templates: Dict[str, PresetTemplateIn]):
                 status_code=400,
                 detail=f"Exam duration cannot exceed the maximum threshold of 18 days. (Provided: {tpl.days} days)",
             )
-    clean = {k: v.dict() for k, v in templates.items()}
+        if key in EXPECTED_DAILY_SESSIONS:
+            _validate_session_count(key, tpl.sessions)
+            if tpl.friday_sessions is not None:
+                _validate_session_count(key, tpl.friday_sessions)
+            _validate_session_times(
+                [(s.start_time, s.end_time, s.label, s.slot_type) for s in tpl.sessions]
+            )
+            if tpl.friday_sessions is not None:
+                _validate_session_times(
+                    [(s.start_time, s.end_time, s.label, s.slot_type) for s in tpl.friday_sessions]
+                )
+    clean = {k: v.model_dump() for k, v in templates.items()}
     save_preset_templates(clean)
     return {"message": "Preset templates updated successfully.", "templates": clean}
 
@@ -153,6 +281,9 @@ def clear_all_time_slots():
 
 @router.post("/generate")
 def auto_generate_time_slots_endpoint(params: AutoGenerateSlotsIn):
+    mode = params.lab_mode or get_lab_mode()
+    if params.lab_mode:
+        save_lab_mode(mode)
     try:
         new_slots = store.auto_generate_time_slots(
             from_date=params.from_date,
@@ -163,11 +294,15 @@ def auto_generate_time_slots_endpoint(params: AutoGenerateSlotsIn):
             break_minutes=params.break_minutes,
             skip_weekends=params.skip_weekends,
             replace_existing=params.replace_existing,
+            sessions_per_day=params.sessions_per_day,
+            long_break_minutes=params.long_break_minutes,
         )
+        apply_lab_days(mode)
         seating_cache.clear()
         return {
             "message": f"Successfully generated {len(new_slots)} time slots.",
             "generated_count": len(new_slots),
+            "lab_mode": mode,
             "slots": new_slots,
             "total_slots": len(store.get_time_slots()),
         }
@@ -183,18 +318,40 @@ def create_exam_preset(params: SlotPresetIn):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid preset date: {e}")
 
+    today = datetime.date.today()
+    if first_date < today:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Preset start date {params.from_date} is in the past. Only today ({today.isoformat()}) or future dates are allowed.",
+        )
+    past_holidays = sorted(value for value in holidays if value < today)
+    if past_holidays:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Study holiday {past_holidays[0].isoformat()} is in the past. Only today ({today.isoformat()}) or future dates are allowed.",
+        )
+
     templates = get_preset_templates()
     template = templates.get(params.preset)
     if not template:
         raise HTTPException(status_code=400, detail=f"Unknown preset '{params.preset}'.")
 
     if params.custom_sessions:
+        _validate_session_count(params.preset, params.custom_sessions)
         regular_times = [(s.start_time, s.end_time, s.label or f"Session {i+1}", s.slot_type) for i, s in enumerate(params.custom_sessions)]
+        _validate_session_times(regular_times)
         friday_times = regular_times
     else:
-        regular_times = [(s["start_time"], s["end_time"], s.get("label", ""), s.get("slot_type", "written")) for s in template["sessions"]]
-        friday_sessions = template.get("friday_sessions") or template["sessions"]
+        sessions = template["sessions"]
+        _validate_session_count(params.preset, sessions)
+        regular_times = [(s["start_time"], s["end_time"], s.get("label", ""), s.get("slot_type", "written")) for s in sessions]
+        friday_sessions = template.get("friday_sessions") or sessions
+        _validate_session_count(params.preset, friday_sessions)
         friday_times = [(s["start_time"], s["end_time"], s.get("label", ""), s.get("slot_type", "written")) for s in friday_sessions]
+        long_break = params.long_break_minutes or template.get("long_break_minutes") or 120
+        regular_times = _apply_long_break(regular_times, long_break, params.preset)
+        friday_times = _apply_long_break(friday_times, long_break, params.preset)
+        _validate_session_times(friday_times)
 
     requested_days = params.requested_days or template.get("days", 8 if params.preset == "midterm" else 18)
     if requested_days > 18:
@@ -262,10 +419,15 @@ def create_exam_preset(params: SlotPresetIn):
         store.time_slots.append(slot)
         created.append(slot)
         next_id += 1
+    mode = params.lab_mode or get_lab_mode()
+    if params.lab_mode:
+        save_lab_mode(mode)
+    apply_lab_days(mode)
     seating_cache.clear()
     return {
         "message": f"Created {len(created)} slots for the {params.preset} preset.",
         "generated_count": len(created),
+        "lab_mode": mode,
         "slots": created,
         "total_slots": len(store.get_time_slots()),
     }
@@ -280,6 +442,9 @@ def bulk_delete_time_slots_endpoint(payload: BulkDeleteSlotsIn):
 
 @router.post("/bulk-shift")
 def bulk_shift_time_slots_endpoint(payload: BulkShiftSlotsIn):
-    count = store.bulk_shift_time_slots(payload.slot_ids, payload.shift_days)
+    try:
+        count = store.bulk_shift_time_slots(payload.slot_ids, payload.shift_days)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     seating_cache.clear()
     return {"message": f"Shifted {count} time slots by {payload.shift_days} days.", "count": count}

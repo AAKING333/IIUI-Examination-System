@@ -48,22 +48,24 @@ class ExamWorkflowTests(unittest.TestCase):
 
     def test_seed_covers_all_requested_cohorts_and_persists(self):
         students = data.store.get_students()
-        self.assertEqual(len(students), 675)
+        self.assertEqual(len(students), 663)
         cohort_counts = Counter((student["program"], student["batch"]) for student in students)
         self.assertEqual(cohort_counts, {
+            ("BSCS", "F22"): 11,
             ("BSCS", "F23"): 100,
-            ("BSCS", "F24"): 65,
-            ("BSCS", "F25"): 90,
+            ("BSCS", "F24"): 72,
+            ("BSCS", "F25"): 101,
             ("BSCS", "F26"): 106,
-            ("BSIT", "F23"): 80,
-            ("BSIT", "F24"): 77,
-            ("BSIT", "F25"): 86,
-            ("BSIT", "F26"): 71,
+            ("BSIT", "F22"): 11,
+            ("BSIT", "F23"): 58,
+            ("BSIT", "F24"): 62,
+            ("BSIT", "F25"): 73,
+            ("BSIT", "F26"): 69,
         })
 
         reopened = SQLiteDatabase(DATABASE_PATH).load_master_data()
-        self.assertEqual(len(reopened["students"]), 675)
-        self.assertEqual(len(reopened["courses"]), 46)
+        self.assertEqual(len(reopened["students"]), 663)
+        self.assertEqual(len(reopened["courses"]), 48)
 
     def test_seed_datesheet_is_complete_and_preserves_clash_rules(self):
         published = main.generate_datesheet_endpoint()
@@ -71,11 +73,11 @@ class ExamWorkflowTests(unittest.TestCase):
         self.assertEqual(published["unplaced"], [])
         self.assertTrue(published["datesheet"])
 
-        # SE346 E-Commerce taught by Mr. Abid Jamil across cohorts
-        se_entries = [e for e in published["datesheet"] if e["course_code"] == "SE346"]
-        self.assertTrue(len(se_entries) > 0)
+        # SE 311 Software Engineering is shared by BSCS/BSIT F25 under one teacher.
+        se_entries = [e for e in published["datesheet"] if e["course_code"] == "SE 311"]
+        self.assertTrue(len(se_entries) > 1)
         self.assertEqual(len(set(e["slot_id"] for e in se_entries)), 1)
-        self.assertEqual(se_entries[0]["instructor"], "Mr. Abid Jamil")
+        self.assertEqual(se_entries[0]["instructor"], "Mr. Muhammad Imran Saeed")
 
         teachers_by_slot = defaultdict(dict)
         for entry in published["datesheet"]:
@@ -100,12 +102,20 @@ class ExamWorkflowTests(unittest.TestCase):
             papers = []
             enrolment_types = {item["course"]: item["type"] for item in student["enrolments"]}
             for entry in published["datesheet"]:
-                if (
-                    entry["program"] == student["program"]
-                    and entry["batch"] == student["batch"]
-                    and student["section"] in entry["sections"]
-                    and entry["course_code"] in enrolment_types
-                ):
+                paper = data.store.get_paper_section(student["roll_no"], entry["course_code"])
+                if paper:
+                    in_paper = (
+                        paper["program"] == entry["program"]
+                        and paper["batch"] == entry["batch"]
+                        and paper["section"] in entry["sections"]
+                    )
+                else:
+                    in_paper = (
+                        entry["program"] == student["program"]
+                        and entry["batch"] == student["batch"]
+                        and student["section"] in entry["sections"]
+                    )
+                if in_paper and entry["course_code"] in enrolment_types:
                     papers.append(entry)
             self.assertEqual(len({paper["slot_id"] for paper in papers}), len(papers))
             daily_counts = Counter(paper["date"] for paper in papers)
@@ -114,17 +124,17 @@ class ExamWorkflowTests(unittest.TestCase):
                 paper["date"] for paper in papers
                 if enrolment_types[paper["course_code"]] == "regular"
                 and not paper.get("is_lab")
-                and paper["course_code"] not in ("ISLAMIC1", "M101", "SE346")
+                and paper["course_code"] not in ("GEC 103/GEC 104", "M101", "SE346")
             ]
             self.assertEqual(len(regular_written_days), len(set(regular_written_days)))
 
     def test_seating_generation_does_not_mutate_master_course_rosters(self):
         published = main.generate_datesheet_endpoint()
-        course = data.store.get_course("CS342")
+        course = data.store.get_course("CS 342")
         original_rolls = list(course["student_roll_numbers"])
         entries = [
             entry for entry in published["datesheet"]
-            if entry["course_code"] == "CS342"
+            if entry["course_code"] == "CS 342"
         ]
         self.assertGreater(len(entries), 1)
 

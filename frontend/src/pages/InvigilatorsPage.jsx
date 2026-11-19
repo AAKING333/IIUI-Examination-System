@@ -48,6 +48,7 @@ export default function InvigilatorsPage({
 
   // Filters for duties table
   const [searchQuery, setSearchQuery] = useState('');
+  const [personFilter, setPersonFilter] = useState('');
   const [slotFilter, setSlotFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
@@ -361,12 +362,44 @@ export default function InvigilatorsPage({
         (d.room_name || d.room_id || '').toLowerCase().includes(q) ||
         (d.notes || '').toLowerCase().includes(q);
       const matchSlot = !slotFilter || d.slot_id === slotFilter;
+      const matchPerson = !personFilter || d.instructor === personFilter;
       const matchType = !typeFilter || d.duty_type === typeFilter;
       const matchSource = !sourceFilter || (d.source || 'auto') === sourceFilter;
       const matchStatus = !statusFilter || (d.status || 'assigned') === statusFilter;
-      return matchQuery && matchSlot && matchType && matchSource && matchStatus;
+      return matchQuery && matchSlot && matchPerson && matchType && matchSource && matchStatus;
     });
-  }, [duties, searchQuery, slotFilter, typeFilter, sourceFilter, statusFilter]);
+  }, [duties, searchQuery, personFilter, slotFilter, typeFilter, sourceFilter, statusFilter]);
+
+  const personOptions = useMemo(
+    () =>
+      Array.from(new Set(duties.map((d) => d.instructor).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [duties]
+  );
+
+  const dutyBlocks = useMemo(() => {
+    const order = new Map(rosterSlots.map((s, idx) => [s.slot_id, idx]));
+    const groups = new Map();
+    filteredDuties.forEach((d) => {
+      const key = d.slot_id || 'unassigned';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(d);
+    });
+    return Array.from(groups.entries())
+      .map(([slotId, list]) => {
+        const slot = rosterSlots.find((s) => s.slot_id === slotId) || {};
+        const rooms = new Set(list.map((d) => d.room_id || d.room_name));
+        return {
+          slotId,
+          duties: list,
+          slot,
+          rooms: rooms.size,
+          order: order.has(slotId) ? order.get(slotId) : 9999,
+        };
+      })
+      .sort((a, b) => a.order - b.order);
+  }, [filteredDuties, rosterSlots]);
 
   // Filtered faculty for workload view
   const filteredFaculty = useMemo(() => {
@@ -442,9 +475,6 @@ export default function InvigilatorsPage({
       <div className="itms-dash__pageHeader" style={{ alignItems: 'flex-start' }}>
         <div>
           <h1 className="itms-dash__pageTitle">Invigilator Duties</h1>
-          <p className="itms-dash__pageSub">
-            Faculty examination hall assignments, room staffing coverage, and workload quotas.
-          </p>
         </div>
 
         {/* Action Controls */}
@@ -678,6 +708,21 @@ export default function InvigilatorsPage({
               <select
                 className="form-control"
                 style={{ width: 'auto', fontSize: '0.84rem', padding: '5px 9px' }}
+                value={personFilter}
+                onChange={(e) => setPersonFilter(e.target.value)}
+                title="Show only one person's duties"
+              >
+                <option value="">All Invigilators</option>
+                {personOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className="form-control"
+                style={{ width: 'auto', fontSize: '0.84rem', padding: '5px 9px' }}
                 value={slotFilter}
                 onChange={(e) => setSlotFilter(e.target.value)}
               >
@@ -726,12 +771,13 @@ export default function InvigilatorsPage({
                 ))}
               </select>
 
-              {(searchQuery || slotFilter || typeFilter || sourceFilter || statusFilter) && (
+              {(searchQuery || personFilter || slotFilter || typeFilter || sourceFilter || statusFilter) && (
                 <button
                   type="button"
                   className="btn btn--sm btn--outline"
                   onClick={() => {
                     setSearchQuery('');
+                    setPersonFilter('');
                     setSlotFilter('');
                     setTypeFilter('');
                     setSourceFilter('');
@@ -749,214 +795,251 @@ export default function InvigilatorsPage({
             </span>
           </div>
 
-          {/* Table */}
-          <div className="card-table-wrapper">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th style={{ minWidth: 170 }}>Exam Slot</th>
-                  <th style={{ minWidth: 140 }}>Room / Lab</th>
-                  <th style={{ minWidth: 190 }}>Invigilator Name</th>
-                  <th style={{ width: 140 }}>Category</th>
-                  <th style={{ width: 110 }}>Source</th>
-                  <th style={{ width: 100 }}>Status</th>
-                  <th style={{ width: 120, textAlign: 'right' }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--itms-text-muted)' }}>
-                      Loading invigilation roster...
-                    </td>
-                  </tr>
-                ) : filteredDuties.map((duty) => {
-                  const isOwn = duty.duty_type === 'own_subject';
-                  const isEcrRotation = duty.duty_type === 'ecr_rotation';
-                  const isManual = duty.source === 'manual';
-                  return (
-                    <tr key={duty.id}>
-                      <td>
-                        <strong style={{ color: 'var(--iiui-navy)' }}>
-                          {formatSlotLabel(duty.slot_id)}
-                        </strong>
-                        <div style={{ fontSize: '0.74rem', color: 'var(--itms-text-muted)' }}>
-                          {duty.slot_is_morning ? 'Morning session' : 'Afternoon session'}
-                        </div>
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            background: duty.room_type === 'lab' ? '#f0fdf4' : '#f8fafc',
-                            color: duty.room_type === 'lab' ? '#15803d' : 'var(--iiui-navy)',
-                            border: `1px solid ${duty.room_type === 'lab' ? '#bbf7d0' : '#e2e8f0'}`,
-                            padding: '2px 7px',
-                            borderRadius: '4px',
-                            fontWeight: 600,
-                            fontSize: '0.82rem',
-                          }}
-                        >
-                          {duty.room_name || duty.room_id}
+          {/* Duty blocks grouped by exam slot */}
+          {isLoading ? (
+            <div className="card-table-wrapper" style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--itms-text-muted)' }}>
+              Loading invigilation roster...
+            </div>
+          ) : duties.length === 0 ? (
+            <div className="card-table-wrapper" style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--itms-text-muted)' }}>
+              <p style={{ margin: '0 0 0.75rem', fontWeight: 500 }}>
+                No invigilation duty roster has been generated yet.
+              </p>
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={() => handleRecalculate()}
+                disabled={isRecalculating || !isDatesheetPublished}
+              >
+                {isRecalculating ? 'Generating...' : 'Generate Invigilation Roster'}
+              </button>
+            </div>
+          ) : dutyBlocks.length === 0 ? (
+            <div className="card-table-wrapper" style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--itms-text-muted)' }}>
+              No assignments matched your filters.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {dutyBlocks.map((block) => (
+                <div key={block.slotId} className="card-table-wrapper" style={{ padding: '0.85rem 1.15rem' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '1rem',
+                      marginBottom: '0.65rem',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                      <strong style={{ color: 'var(--iiui-navy)', fontSize: '0.95rem' }}>
+                        {block.slot.date
+                          ? new Date(`${block.slot.date}T00:00:00`).toLocaleDateString('en-GB', {
+                              weekday: 'short',
+                              day: 'numeric',
+                              month: 'short',
+                              year: 'numeric',
+                            })
+                          : block.slotId}
+                      </strong>
+                      {block.slot.start_time && (
+                        <span style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)', fontWeight: 600 }}>
+                          {formatTimeRange12(block.slot.start_time, block.slot.end_time)}
                         </span>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)', marginTop: 2 }}>
-                          {duty.room_type === 'lab' ? 'Computer Lab' : 'Written Hall'}
-                        </div>
-                      </td>
-                      <td>
-                        <div style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>
-                          {duty.instructor}
-                        </div>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
-                          {duty.is_ecr && (
-                            <span style={{ fontSize: '0.7rem', color: '#0369a1', background: '#e0f2fe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              ECR
-                            </span>
-                          )}
-                          {duty.is_ecl && (
-                            <span style={{ fontSize: '0.7rem', color: '#6d28d9', background: '#ede9fe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              ECL
-                            </span>
-                          )}
-                          {duty.is_chairman && (
-                            <span style={{ fontSize: '0.7rem', color: '#1e40af', background: '#dbeafe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              Chairman/HOD
-                            </span>
-                          )}
-                          {duty.is_visiting && (
-                            <span style={{ fontSize: '0.7rem', color: '#0f766e', background: '#ccfbf1', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              Visiting
-                            </span>
-                          )}
-                          {duty.is_no_duty && (
-                            <span style={{ fontSize: '0.7rem', color: '#9a3412', background: '#ffedd5', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              No-Duty
-                            </span>
-                          )}
-                          {duty.is_senior && (
-                            <span style={{ fontSize: '0.7rem', color: '#92400e', background: '#fef3c7', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
-                              {duty.is_senior_role ? 'Senior (Max 2)' : 'Senior'}
-                            </span>
-                          )}
-                          {duty.notes && (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)' }}>
-                              {duty.notes}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '2px 8px',
-                            borderRadius: '9999px',
-                            fontSize: '0.73rem',
-                            fontWeight: 600,
-                            background: isOwn
-                              ? '#f0fdf4'
-                              : isEcrRotation
-                                ? '#e0f2fe'
-                                : '#eff6ff',
-                            color: isOwn ? '#15803d' : isEcrRotation ? '#0369a1' : '#1d4ed8',
-                            border: `1px solid ${isOwn ? '#bbf7d0' : isEcrRotation ? '#bae6fd' : '#bfdbfe'}`,
-                          }}
-                        >
-                          {isOwn ? 'Own Subject' : isEcrRotation ? 'ECR Rotation' : 'Extra Duty'}
-                        </span>
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            padding: '2px 7px',
-                            borderRadius: '9999px',
-                            fontSize: '0.72rem',
-                            fontWeight: 600,
-                            background: isManual ? '#fffbeb' : '#f8fafc',
-                            color: isManual ? '#b45309' : '#64748b',
-                            border: `1px solid ${isManual ? '#fde68a' : '#e2e8f0'}`,
-                          }}
-                        >
-                          {isManual ? 'Manual' : 'Auto'}
-                        </span>
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '2px 7px',
-                            borderRadius: '9999px',
-                            fontSize: '0.72rem',
-                            fontWeight: 600,
-                            background:
-                              duty.status === 'completed'
-                                ? '#f0fdf4'
-                                : duty.status === 'absent'
-                                  ? '#fef2f2'
-                                  : '#f1f5f9',
-                            color:
-                              duty.status === 'completed'
-                                ? '#15803d'
-                                : duty.status === 'absent'
-                                  ? '#b91c1c'
-                                  : '#334155',
-                          }}
-                        >
-                          {duty.status || 'assigned'}
-                        </span>
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: '0.35rem', justifyContent: 'flex-end' }}>
-                          <button
-                            type="button"
-                            className="btn btn--sm btn--outline"
-                            onClick={() => handleOpenEdit(duty)}
-                            title="Edit assignment"
-                            style={{ padding: '2px 7px', fontSize: '0.78rem' }}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn--sm btn--outline"
-                            onClick={() => handleDeleteDuty(duty)}
-                            title="Remove assignment"
-                            style={{ padding: '2px 7px', fontSize: '0.78rem', color: 'var(--itms-danger)', borderColor: '#fecaca' }}
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!isLoading && filteredDuties.length === 0 && (
-                  <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--itms-text-muted)' }}>
-                      {duties.length === 0 ? (
-                        <div>
-                          <p style={{ margin: '0 0 0.75rem', fontWeight: 500 }}>
-                            No invigilation duty roster has been generated yet.
-                          </p>
-                          <button
-                            type="button"
-                            className="btn btn--primary"
-                            onClick={() => handleRecalculate()}
-                            disabled={isRecalculating || !isDatesheetPublished}
-                          >
-                            {isRecalculating ? 'Generating...' : 'Generate Invigilation Roster'}
-                          </button>
-                        </div>
-                      ) : (
-                        'No assignments matched your filters.'
                       )}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                      {block.slot.is_morning !== undefined && (
+                        <span
+                          style={{
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            padding: '2px 7px',
+                            borderRadius: 4,
+                            background: block.slot.is_morning ? '#fffbeb' : '#f1f5f9',
+                            color: block.slot.is_morning ? '#b45309' : '#334155',
+                          }}
+                        >
+                          {block.slot.is_morning ? 'Morning' : 'Afternoon'}
+                        </span>
+                      )}
+                    </div>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
+                      {block.duties.length} dut{block.duties.length === 1 ? 'y' : 'ies'} &middot;{' '}
+                      {block.rooms} room{block.rooms === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th style={{ minWidth: 140 }}>Room / Lab</th>
+                        <th style={{ minWidth: 190 }}>Invigilator Name</th>
+                        <th style={{ width: 140 }}>Category</th>
+                        <th style={{ width: 110 }}>Source</th>
+                        <th style={{ width: 100 }}>Status</th>
+                        <th style={{ width: 120, textAlign: 'right' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {block.duties.map((duty) => {
+                        const isOwn = duty.duty_type === 'own_subject';
+                        const isEcrRotation = duty.duty_type === 'ecr_rotation';
+                        const isManual = duty.source === 'manual';
+                        return (
+                          <tr key={duty.id}>
+                            <td>
+                              <span
+                                style={{
+                                  background: duty.room_type === 'lab' ? '#f0fdf4' : '#f8fafc',
+                                  color: duty.room_type === 'lab' ? '#15803d' : 'var(--iiui-navy)',
+                                  border: `1px solid ${duty.room_type === 'lab' ? '#bbf7d0' : '#e2e8f0'}`,
+                                  padding: '2px 7px',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                  fontSize: '0.82rem',
+                                }}
+                              >
+                                {duty.room_name || duty.room_id}
+                              </span>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)', marginTop: 2 }}>
+                                {duty.room_type === 'lab' ? 'Computer Lab' : 'Written Hall'}
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 600, color: 'var(--iiui-navy)' }}>
+                                {duty.instructor}
+                              </div>
+                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
+                                {duty.is_ecr && (
+                                  <span style={{ fontSize: '0.7rem', color: '#0369a1', background: '#e0f2fe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                                    ECR
+                                  </span>
+                                )}
+                                {duty.is_ecl && (
+                                  <span style={{ fontSize: '0.7rem', color: '#6d28d9', background: '#ede9fe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                                    ECL
+                                  </span>
+                                )}
+                                {duty.is_chairman && (
+                                  <span style={{ fontSize: '0.7rem', color: '#1e40af', background: '#dbeafe', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                                    Chairman/HOD
+                                  </span>
+                                )}
+                                {duty.is_visiting && (
+                                  <span style={{ fontSize: '0.7rem', color: '#0f766e', background: '#ccfbf1', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                                    Visiting
+                                  </span>
+                                )}
+                                {duty.is_no_duty && (
+                                  <span style={{ fontSize: '0.7rem', color: '#9a3412', background: '#ffedd5', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                                    No-Duty
+                                  </span>
+                                )}
+                                {duty.is_senior && (
+                                  <span style={{ fontSize: '0.7rem', color: '#92400e', background: '#fef3c7', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                                    {duty.is_senior_role ? 'Senior (Max 2)' : 'Senior'}
+                                  </span>
+                                )}
+                                {duty.notes && (
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--itms-text-muted)' }}>
+                                    {duty.notes}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '2px 8px',
+                                  borderRadius: '9999px',
+                                  fontSize: '0.73rem',
+                                  fontWeight: 600,
+                                  background: isOwn
+                                    ? '#f0fdf4'
+                                    : isEcrRotation
+                                      ? '#e0f2fe'
+                                      : '#eff6ff',
+                                  color: isOwn ? '#15803d' : isEcrRotation ? '#0369a1' : '#1d4ed8',
+                                  border: `1px solid ${isOwn ? '#bbf7d0' : isEcrRotation ? '#bae6fd' : '#bfdbfe'}`,
+                                }}
+                              >
+                                {isOwn ? 'Own Subject' : isEcrRotation ? 'ECR Rotation' : 'Extra Duty'}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  padding: '2px 7px',
+                                  borderRadius: '9999px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 600,
+                                  background: isManual ? '#fffbeb' : '#f8fafc',
+                                  color: isManual ? '#b45309' : '#64748b',
+                                  border: `1px solid ${isManual ? '#fde68a' : '#e2e8f0'}`,
+                                }}
+                              >
+                                {isManual ? 'Manual' : 'Auto'}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '2px 7px',
+                                  borderRadius: '9999px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 600,
+                                  background:
+                                    duty.status === 'completed'
+                                      ? '#f0fdf4'
+                                      : duty.status === 'absent'
+                                        ? '#fef2f2'
+                                        : '#f1f5f9',
+                                  color:
+                                    duty.status === 'completed'
+                                      ? '#15803d'
+                                      : duty.status === 'absent'
+                                        ? '#b91c1c'
+                                        : '#334155',
+                                }}
+                              >
+                                {duty.status || 'assigned'}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', gap: '0.35rem', justifyContent: 'flex-end' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn--sm btn--outline"
+                                  onClick={() => handleOpenEdit(duty)}
+                                  title="Edit assignment"
+                                  style={{ padding: '2px 7px', fontSize: '0.78rem' }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn--sm btn--outline"
+                                  onClick={() => handleDeleteDuty(duty)}
+                                  title="Remove assignment"
+                                  style={{ padding: '2px 7px', fontSize: '0.78rem', color: 'var(--itms-danger)', borderColor: '#fecaca' }}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
 

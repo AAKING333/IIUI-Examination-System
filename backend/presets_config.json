@@ -16,14 +16,14 @@
         "slot_type": "written"
       },
       {
-        "start_time": "14:30",
-        "end_time": "16:00",
+        "start_time": "14:00",
+        "end_time": "15:30",
         "label": "Afternoon 1",
         "slot_type": "written"
       },
       {
-        "start_time": "16:15",
-        "end_time": "17:45",
+        "start_time": "15:45",
+        "end_time": "17:15",
         "label": "Afternoon 2",
         "slot_type": "written"
       }
@@ -42,18 +42,19 @@
         "slot_type": "written"
       },
       {
-        "start_time": "14:45",
-        "end_time": "16:15",
+        "start_time": "14:00",
+        "end_time": "15:30",
         "label": "Afternoon 1",
         "slot_type": "written"
       },
       {
-        "start_time": "16:30",
-        "end_time": "18:00",
+        "start_time": "15:45",
+        "end_time": "17:15",
         "label": "Afternoon 2",
         "slot_type": "written"
       }
-    ]
+    ],
+    "long_break_minutes": 120
   },
   "terminal": {
     "name": "Terminal Examination",
@@ -66,8 +67,8 @@
         "slot_type": "written"
       },
       {
-        "start_time": "14:30",
-        "end_time": "17:30",
+        "start_time": "13:45",
+        "end_time": "16:45",
         "label": "Afternoon",
         "slot_type": "written"
       }
@@ -80,11 +81,13 @@
         "slot_type": "written"
       },
       {
-        "start_time": "14:45",
-        "end_time": "17:45",
+        "start_time": "13:45",
+        "end_time": "16:45",
         "label": "Afternoon",
         "slot_type": "written"
       }
-    ]
-  }
+    ],
+    "long_break_minutes": 120
+  },
+  "lab_mode": "concurrent"
 }

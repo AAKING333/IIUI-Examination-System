@@ -23,15 +23,22 @@ from datetime import datetime
 from collections import defaultdict
 import copy
 import math
+import random
 import re
+import time
 from data import store, enrolment_type
+
+# Courses allowed to share a day with another regular paper (NR-12 exception).
+_SECOND_REGULAR_CODES = ("ISLAMIC1", "GEC 103/GEC 104", "M101", "SE346")
+# Courses that also allow a third course in the same session.
+_THIRD_SLOT_CODES = ("M101", "SE346")
 
 
 def get_course_teachers(course: Dict[str, Any]) -> List[str]:
     teachers = [t for t in (course.get("instructors") or []) if t and t.strip().lower() not in ("unassigned", "tbd", "n/a", "none")]
     if not teachers:
         for s in course.get("sections", []):
-            inst = s.get("instructor", "").strip()
+            inst = (s.get("instructor", "") if isinstance(s, dict) else "").strip()
             if inst and inst.lower() not in ("unassigned", "tbd", "n/a", "none"):
                 teachers.append(inst)
     if not teachers:
@@ -53,10 +60,20 @@ def _expand_course_sections(courses: List[Dict[str, Any]]) -> List[Dict[str, Any
             student = store.student_by_roll.get(roll)
             if not student:
                 continue
-            teacher = store.get_instructor_for_student_course(student, course["code"])
-            sec = student.get("section", "A") if bool(course.get("is_lab")) or len(cohort_sections[(student["program"], student["batch"])]) >= 2 else ""
+            paper = store.get_paper_section(roll, course["code"])
+            if paper and paper.get("batch"):
+                # Repeater sitting with the paper's own batch/section.
+                program = paper["program"]
+                batch = paper["batch"]
+                sec = paper.get("section") or "A"
+                teacher = store.get_instructor_for_paper(program, batch, sec, course["code"])
+            else:
+                program = student["program"]
+                batch = student["batch"]
+                teacher = store.get_instructor_for_student_course(student, course["code"])
+                sec = student.get("section", "A") if bool(course.get("is_lab")) or len(cohort_sections[(program, batch)]) >= 2 else ""
             groups[(
-                student["program"], student["batch"], sec,
+                program, batch, sec,
                 teacher or course.get("instructor", ""),
             )].append(roll)
 
@@ -73,9 +90,12 @@ def _expand_course_sections(courses: List[Dict[str, Any]]) -> List[Dict[str, Any
             unit["instructors"] = [teacher] if teacher else []
             sec_label = f"Section {isolated_section}" if isolated_section else f"Section {'+'.join(sections)}"
             unit["batches"] = f"{program} {batch} {sec_label}"
-            unit["student_roll_numbers"] = sorted(rolls)
-            unit["regular_roll_numbers"] = [r for r in rolls if enrolment_type(r, course["code"]) == "regular"]
-            unit["back_roll_numbers"] = [r for r in rolls if enrolment_type(r, course["code"]) == "back"]
+            regular_rolls = sorted(r for r in rolls if enrolment_type(r, course["code"]) == "regular")
+            back_rolls = sorted(r for r in rolls if enrolment_type(r, course["code"]) == "back")
+            # Repeaters are listed after the regular students of the paper.
+            unit["student_roll_numbers"] = regular_rolls + back_rolls
+            unit["regular_roll_numbers"] = regular_rolls
+            unit["back_roll_numbers"] = back_rolls
             unit["unit_id"] = f"{course['code']}|{program}|{batch}|{isolated_section}|{teacher}"
             units.append(unit)
     return units
@@ -142,11 +162,18 @@ def generate_datesheet(
 
     sorted_slots = sorted(active_slots, key=lambda s: (s["date"], s["start_time"]))
     distinct_dates = sorted(list(set(s["date"] for s in sorted_slots)))
+    unique_dates_count = len(distinct_dates)
+    is_terminal_or_final = unique_dates_count >= 10
     
-    # NR-04 Lab scheduling mode: dedicated lab days segregation
+    # NR-04 Lab scheduling mode: dedicated lab days segregation.
+    # Slots generated with "Separate" carry slot_type=lab on the reserved last days.
+    marked_lab_dates = {s["date"] for s in sorted_slots if s.get("slot_type") == "lab"}
     if lab_mode in ("separate_days", "separate_week"):
-        lab_dates_count = 3 if len(distinct_dates) >= 9 else (2 if len(distinct_dates) >= 7 else 1)
-        lab_dates = set(distinct_dates[-lab_dates_count:])
+        if marked_lab_dates and len(marked_lab_dates) < len(distinct_dates):
+            lab_dates = marked_lab_dates
+        else:
+            lab_dates_count = 2 if len(distinct_dates) >= 7 else (1 if len(distinct_dates) >= 3 else 0)
+            lab_dates = set(distinct_dates[-lab_dates_count:]) if lab_dates_count else set()
         theory_dates = set(distinct_dates) - lab_dates
     else:
         lab_dates = set(distinct_dates)
@@ -164,7 +191,7 @@ def generate_datesheet(
     small_courses = sorted(
         [c for c in written_groups if sum(len(u["student_roll_numbers"]) for u in written_groups[c]) <= 145],
         key=lambda c: (
-            1 if c in ("M101", "SE346") else 0,
+            1 if c in _THIRD_SLOT_CODES else 0,
             -sum(len(u["student_roll_numbers"]) for u in written_groups[c]),
         ),
     )
@@ -185,7 +212,7 @@ def generate_datesheet(
             return False
 
         current_codes = set(u["code"] for u in current_units)
-        max_c = 3 if any(c in ("M101", "SE346") for c in current_codes) or code in ("M101", "SE346") else 2
+        max_c = 3 if any(c in _THIRD_SLOT_CODES for c in current_codes) or code in _THIRD_SLOT_CODES else 2
         if len(current_codes) >= max_c and code not in current_codes:
             return False
 
@@ -205,6 +232,23 @@ def generate_datesheet(
         s_is_eve = is_evening(slot)
         s_is_mor = is_morning(slot)
 
+        # Terminal rest-day rule: a batch never sits a regular paper on two
+        # consecutive calendar days, so every paper is followed by a study day.
+        if is_terminal_or_final:
+            for u in units:
+                if not (u.get("program") and u.get("batch")) or u.get("batch") == "RPT":
+                    continue
+                cohort = (u["program"], u["batch"])
+                for d_str in batch_written_dates[cohort]:
+                    if d_str == slot["date"]:
+                        continue
+                    try:
+                        d = datetime.strptime(d_str, "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    if abs((s_date - d).days) == 1:
+                        return False
+
         for u in units:
             for r in u["student_roll_numbers"]:
                 if slot["id"] in student_slots.get(r, set()):
@@ -215,7 +259,7 @@ def generate_datesheet(
                 if typ == "regular":
                     day_regs = [p for p in student_regular_days.get(r, {}).get(slot["date"], []) if not p["is_lab"]]
                     if day_regs:
-                        allowed = (code in ("ISLAMIC1", "M101", "SE346")) or any(p["code"] in ("ISLAMIC1", "M101", "SE346") for p in day_regs)
+                        allowed = (code in _SECOND_REGULAR_CODES) or any(p["code"] in _SECOND_REGULAR_CODES for p in day_regs)
                         if not allowed:
                             return False
                     # NR-03: Evening-to-Morning Regular Paper Constraint
@@ -247,6 +291,7 @@ def generate_datesheet(
                 "unit_id": u["unit_id"],
                 "is_lab": False,
                 "students": len(rolls),
+                "student_rolls": list(rolls),
                 "regular_students": len(u.get("regular_roll_numbers", [])),
                 "back_students": len(u.get("back_roll_numbers", [])),
                 "slot_id": slot["id"],
@@ -334,43 +379,119 @@ def generate_datesheet(
         reverse=True,
     )
 
-    unique_dates_count = len(set(s["date"] for s in sorted_slots))
-    is_terminal_or_final = unique_dates_count >= 10
+    # --- Greedy multi-restart scheduler -----------------------------------
+    # The previous exhaustive backtracker could explore an exponential search
+    # tree (minutes of CPU) when a late course was hard to place. We now place
+    # courses greedily and, only if the first pass gets stuck, retry with a
+    # different ordering under a small, hard time budget.
+    course_weight = {
+        c: sum(len(u["student_roll_numbers"]) for u in written_groups[c])
+        for c in all_written_codes
+    }
+    course_roll_sets = {
+        c: {r for u in written_groups[c] for r in u["student_roll_numbers"]}
+        for c in all_written_codes
+    }
+    course_teacher_sets = {
+        c: {t for u in written_groups[c] for t in get_course_teachers(u)}
+        for c in all_written_codes
+    }
+    conflict_degree = {c: 0 for c in all_written_codes}
+    codes_list = list(all_written_codes)
+    for i, a in enumerate(codes_list):
+        for b in codes_list[i + 1:]:
+            if (course_roll_sets[a] & course_roll_sets[b]) or (course_teacher_sets[a] & course_teacher_sets[b]):
+                conflict_degree[a] += 1
+                conflict_degree[b] += 1
 
-    def solve_written(idx=0):
-        if idx == len(all_written_codes):
-            return True
-        code = all_written_codes[idx]
-        needed = sum(len(u["student_roll_numbers"]) for u in written_groups[code])
+    def slot_priority(code: str, s: Dict[str, Any], rng: Optional[random.Random] = None):
+        gap_pen = get_batch_gap_penalty(code, s) if is_terminal_or_final else 0
+        curr = sum(len(u["student_roll_numbers"]) for u in slot_courses_map[s["id"]] if not u.get("is_lab"))
+        tot = curr + course_weight[code]
+        noise = rng.random() * 0.75 if rng else 0.0
+        if curr > 0:
+            return (gap_pen, 1, -tot, noise)
+        # On retries, spread courses over different empty days instead of
+        # always filling the earliest slot, which can strand a course whose
+        # students are blocked the day before a morning paper.
+        s_num = rng.randint(0, 1000) if rng else int(re.sub(r"\D", "", s["id"]) or 0)
+        return (gap_pen, 0, s_num, noise)
 
-        def slot_priority(s):
-            gap_pen = get_batch_gap_penalty(code, s) if is_terminal_or_final else 0
-            curr = sum(len(u["student_roll_numbers"]) for u in slot_courses_map[s["id"]] if not u.get("is_lab"))
-            tot = curr + needed
-            s_num = int(re.sub(r"\D", "", s["id"]) or 0)
-            if curr > 0:
-                if tot >= 240 and tot <= hall_cap:
-                    return (gap_pen, 0, -tot)
-                return (gap_pen, 1, -tot)
-            return (gap_pen, 2, s_num)
+    def _unplace_all(placed: List[tuple]) -> None:
+        for code, slot in reversed(placed):
+            unplace_written_course(code, slot)
 
-        ordered_slots = sorted(sorted_slots, key=slot_priority)
-        for slot in ordered_slots:
-            if can_place_written_course(code, slot):
-                place_written_course(code, slot)
-                if solve_written(idx + 1):
-                    return True
-                unplace_written_course(code, slot)
-        return False
+    def _greedy_pass(order: List[str], rng: Optional[random.Random] = None):
+        placed = []
+        for code in order:
+            for slot in sorted(sorted_slots, key=lambda s: slot_priority(code, s, rng)):
+                if can_place_written_course(code, slot):
+                    place_written_course(code, slot)
+                    placed.append((code, slot))
+                    break
+            else:
+                return False, placed
+        return True, placed
 
-    success = solve_written()
+    base_order = sorted(
+        all_written_codes,
+        key=lambda c: (-course_weight[c], -conflict_degree[c], c),
+    )
+
+    def _order_for(attempt: int) -> List[str]:
+        if attempt == 0:
+            return base_order
+        # Perturb the placement order slightly to escape a dead end.
+        order_rng = random.Random(20261119 + attempt)
+        return sorted(
+            all_written_codes,
+            key=lambda c: (
+                -course_weight[c] * (1 + order_rng.uniform(-0.35, 0.35)),
+                -conflict_degree[c],
+                c,
+            ),
+        )
+
+    best_attempt = None
+    best_count = 0
+    success = False
+    deadline = time.monotonic() + 4.0
+    for attempt in range(60):
+        ok, placed = _greedy_pass(
+            _order_for(attempt),
+            random.Random(7777 + attempt) if attempt else None,
+        )
+        if ok:
+            success = True
+            break
+        if len(placed) > best_count:
+            best_count = len(placed)
+            best_attempt = attempt
+        _unplace_all(placed)
+        if time.monotonic() > deadline:
+            break
+
+    if not success and best_attempt is not None:
+        # Rebuild the best partial layout, then fill the remaining courses.
+        _greedy_pass(
+            _order_for(best_attempt),
+            random.Random(7777 + best_attempt) if best_attempt else None,
+        )
+
     if not success:
-        # Fallback greedy
-        for code in all_written_codes:
-            if any(u["code"] == code for u_list in slot_courses_map.values() for u in u_list):
-                continue
-            ordered_fallback = sorted(sorted_slots, key=lambda s: get_batch_gap_penalty(code, s) if is_terminal_or_final else 0)
-            for slot in ordered_fallback:
+        # Keep the best partial layout and fill the rest greedily.
+        already = {
+            u["code"]
+            for u_list in slot_courses_map.values()
+            for u in u_list
+            if not u.get("is_lab")
+        }
+        leftovers = sorted(
+            [c for c in all_written_codes if c not in already],
+            key=lambda c: (-course_weight[c], -conflict_degree[c], c),
+        )
+        for code in leftovers:
+            for slot in sorted(sorted_slots, key=lambda s: slot_priority(code, s)):
                 if can_place_written_course(code, slot):
                     place_written_course(code, slot)
                     break
@@ -381,6 +502,7 @@ def generate_datesheet(
                 "course_code": code,
                 "course_title": written_groups[code][0]["title"] if written_groups[code] else code,
                 "students": sum(len(u["student_roll_numbers"]) for u in written_groups[code]),
+                "is_lab": False,
                 "reason": "Could not find conflict-free slot for all batches simultaneously.",
             })
 
@@ -390,6 +512,7 @@ def generate_datesheet(
 
     def needed_labs_count(u: Dict[str, Any]) -> int:
         return max(1, math.ceil(len(u.get("student_roll_numbers", [])) / 25))
+
 
     def can_place_lab_unit(unit: Dict[str, Any], slot: Dict[str, Any]) -> bool:
         current_labs = [u for u in slot_courses_map[slot["id"]] if u.get("is_lab")]
@@ -453,6 +576,7 @@ def generate_datesheet(
             "unit_id": unit["unit_id"],
             "is_lab": True,
             "students": len(rolls),
+            "student_rolls": list(rolls),
             "regular_students": len(unit.get("regular_roll_numbers", [])),
             "back_students": len(unit.get("back_roll_numbers", [])),
             "slot_id": slot["id"],
@@ -482,22 +606,131 @@ def generate_datesheet(
     else:
         ordered_lab_slots = sorted_slots
 
-    remaining_labs = sorted(
-        lab_units,
-        key=lambda u: (u["code"], len(u["student_roll_numbers"])),
-    )
-    for unit in list(remaining_labs):
-        for slot in ordered_lab_slots:
-            if can_place_lab_unit(unit, slot):
-                place_lab_unit(unit, slot)
-                remaining_labs.remove(unit)
-                break
+    def unplace_lab_unit(unit: Dict[str, Any], slot: Dict[str, Any]) -> None:
+        nonlocal datesheet
+        unit_id = unit["unit_id"]
+        datesheet = [
+            d for d in datesheet
+            if not (d["slot_id"] == slot["id"] and d["unit_id"] == unit_id)
+        ]
+        slot_courses_map[slot["id"]] = [
+            u for u in slot_courses_map[slot["id"]] if u.get("unit_id") != unit_id
+        ]
+        for t in get_course_teachers(unit):
+            teacher_courses[t].pop(slot["id"], None)
+        for r in unit["student_roll_numbers"]:
+            student_slots.get(r, set()).discard(slot["id"])
+            if slot["date"] in student_day_count.get(r, {}):
+                student_day_count[r][slot["date"]] -= 1
+            if enrolment_type(r, unit["code"]) == "regular":
+                regs = student_regular_days.get(r, {}).get(slot["date"], [])
+                student_regular_days[r][slot["date"]] = [
+                    p for p in regs if not (p["code"] == unit["code"] and p.get("is_lab"))
+                ]
+                student_regular_papers[r] = [
+                    p for p in student_regular_papers.get(r, [])
+                    if not (p["code"] == unit["code"] and p["slot_id"] == slot["id"])
+                ]
+
+    def _unplace_all_labs(placed: List[tuple]) -> None:
+        for unit, slot in reversed(placed):
+            unplace_lab_unit(unit, slot)
+
+    def _lab_slot_order(attempt: int) -> List[Dict[str, Any]]:
+        slots = list(ordered_lab_slots)
+        if attempt:
+            rng = random.Random(4242 + attempt)
+            lab_part = [s for s in slots if s["date"] in lab_dates] if lab_mode in ("separate_days", "separate_week") else []
+            other_part = [s for s in slots if s not in lab_part]
+            rng.shuffle(lab_part)
+            rng.shuffle(other_part)
+            slots = lab_part + other_part
+        return slots
+
+    def _lab_order_for(attempt: int) -> List[Dict[str, Any]]:
+        if attempt == 0:
+            return sorted(lab_units, key=lambda u: (-len(u["student_roll_numbers"]), u["code"]))
+        rng = random.Random(1212 + attempt)
+        return sorted(
+            lab_units,
+            key=lambda u: (
+                -len(u["student_roll_numbers"]) * (1 + rng.uniform(-0.4, 0.4)),
+                u["code"],
+            ),
+        )
+
+    def _theory_date_for_lab(unit: Dict[str, Any]) -> Optional[str]:
+        """Date of the matching theory paper, when the lab code is <theory>L."""
+        code = unit["code"]
+        if not code.endswith("L"):
+            return None
+        theory_code = code[:-1]
+        for entry in datesheet:
+            if not entry.get("is_lab") and entry.get("course_code") == theory_code:
+                return entry.get("date")
+        return None
+
+    def _greedy_lab_pass(order: List[Dict[str, Any]], slots: List[Dict[str, Any]]):
+        placed = []
+        for unit in order:
+            slot_order = slots
+            if lab_mode == "concurrent":
+                theory_date = _theory_date_for_lab(unit)
+                if theory_date:
+                    # Concurrent labs sit on the same day as their theory paper when possible.
+                    slot_order = [s for s in slots if s["date"] == theory_date] + [
+                        s for s in slots if s["date"] != theory_date
+                    ]
+            for slot in slot_order:
+                if can_place_lab_unit(unit, slot):
+                    place_lab_unit(unit, slot)
+                    placed.append((unit, slot))
+                    break
+            else:
+                return False, placed
+        return True, placed
+
+    lab_success = False
+    lab_best_attempt = None
+    lab_best_count = 0
+    lab_deadline = time.monotonic() + 4.0
+    for attempt in range(100):
+        ok, placed = _greedy_lab_pass(_lab_order_for(attempt), _lab_slot_order(attempt))
+        if ok:
+            lab_success = True
+            break
+        if len(placed) > lab_best_count:
+            lab_best_count = len(placed)
+            lab_best_attempt = attempt
+        _unplace_all_labs(placed)
+        if time.monotonic() > lab_deadline:
+            break
+
+    if lab_success:
+        remaining_labs = []
+    else:
+        if lab_best_attempt is not None:
+            _greedy_lab_pass(_lab_order_for(lab_best_attempt), _lab_slot_order(lab_best_attempt))
+        already_labs = {
+            u.get("unit_id")
+            for u_list in slot_courses_map.values()
+            for u in u_list
+            if u.get("is_lab")
+        }
+        remaining_labs = [u for u in lab_units if u["unit_id"] not in already_labs]
+        for unit in list(remaining_labs):
+            for slot in ordered_lab_slots:
+                if can_place_lab_unit(unit, slot):
+                    place_lab_unit(unit, slot)
+                    remaining_labs.remove(unit)
+                    break
 
     for unit in remaining_labs:
         unplaced.append({
             "course_code": unit["code"],
             "course_title": unit["title"],
             "students": len(unit.get("student_roll_numbers", [])),
+            "is_lab": True,
             "reason": "No available lab room or clash with teacher/student slots.",
         })
 

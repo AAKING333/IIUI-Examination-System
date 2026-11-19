@@ -121,7 +121,14 @@ def _course_teacher_groups(
         teacher = _resolve_student_teacher(student_by_roll.get(roll), course)
         by_teacher.setdefault(teacher, []).append(roll)
 
-    groups = [{"teacher": t, "rolls": rs} for t, rs in by_teacher.items() if rs]
+    # Within every teacher group, regular students sit first and repeaters last.
+    base_code = re.sub(r"-T\d+$", "", str(course.get("code") or ""))
+    groups = []
+    for t, rs in by_teacher.items():
+        if not rs:
+            continue
+        rs.sort(key=lambda roll: (0 if enrolment_type(roll, base_code) == "regular" else 1, str(roll)))
+        groups.append({"teacher": t, "rolls": rs})
     groups.sort(key=lambda g: (-len(g["rolls"]), g["rolls"][0], g["teacher"]))
     return groups
 
@@ -218,7 +225,17 @@ def _allocate_paper_columns(
 def _partition_stream_strictly(groups: List[Dict[str, Any]], even_cap: int, odd_cap: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Partitions discrete (course, teacher) groups into Stream 0 (even cols) and Stream 1 (odd cols)
     so that a single (course, teacher) is never in both streams, avoiding adjacent-column clashes."""
-    sorted_groups = sorted(groups, key=lambda g: len(g["rolls"]), reverse=True)
+    def _has_regular(g: Dict[str, Any]) -> bool:
+        code = str(g.get("code") or "")
+        if not code:
+            return True
+        return any(enrolment_type(r, code) == "regular" for r in g["rolls"])
+
+    # Groups that still contain regular students queue before repeater-only groups.
+    sorted_groups = sorted(
+        groups,
+        key=lambda g: (0 if _has_regular(g) else 1, -len(g["rolls"])),
+    )
     n = len(sorted_groups)
     best_part = None
     best_diff = 999999
@@ -268,6 +285,31 @@ def _partition_stream_strictly(groups: List[Dict[str, Any]], even_cap: int, odd_
             best_part = (s0_cand, s1_cand)
 
     return best_part or (sorted_groups, [])
+
+
+def _paper_ordered_queue(groups: List[Dict[str, Any]]) -> List[tuple]:
+    """Flattens (course, teacher) groups into a seat queue where every course's
+    regular students are seated before any of its repeaters, keeping each
+    section's teacher block contiguous."""
+    order: List[str] = []
+    buckets: Dict[str, List[tuple]] = {}
+    for g in groups:
+        base = re.sub(r"-T\d+$", "", str(g.get("code") or ""))
+        if base not in buckets:
+            buckets[base] = []
+            order.append(base)
+        buckets[base].extend((g["code"], g["instructor"], r) for r in g["rolls"])
+
+    queue: List[tuple] = []
+    for base in order:
+        items = buckets[base]
+        items.sort(key=lambda it: (
+            0 if enrolment_type(it[2], base) == "regular" else 1,
+            str(it[0]),
+            str(it[2]),
+        ))
+        queue.extend(items)
+    return queue
 
 
 def _pack_pair_into_rooms(
@@ -875,8 +917,8 @@ def _build_hall_seating_plan(
             even_cap = sum(_room_student_rows(r) * ((r["columns"] + 1) // 2) for r in chosen)
             odd_cap = sum(_room_student_rows(r) * (r["columns"] // 2) for r in chosen)
             s0, s1 = _partition_stream_strictly(slot_groups, even_cap, odd_cap)
-            s0_queue = [(g["code"], g["instructor"], r) for g in s0 for r in g["rolls"]]
-            s1_queue = [(g["code"], g["instructor"], r) for g in s1 for r in g["rolls"]]
+            s0_queue = _paper_ordered_queue(s0)
+            s1_queue = _paper_ordered_queue(s1)
 
             while (len(s0_queue) > even_cap or len(s1_queue) > odd_cap) and len(chosen) < len(all_rooms):
                 for r in all_rooms:
@@ -886,8 +928,8 @@ def _build_hall_seating_plan(
                         odd_cap += _room_student_rows(r) * (r["columns"] // 2)
                         break
                 s0, s1 = _partition_stream_strictly(slot_groups, even_cap, odd_cap)
-                s0_queue = [(g["code"], g["instructor"], r) for g in s0 for r in g["rolls"]]
-                s1_queue = [(g["code"], g["instructor"], r) for g in s1 for r in g["rolls"]]
+                s0_queue = _paper_ordered_queue(s0)
+                s1_queue = _paper_ordered_queue(s1)
 
             s0_idx = 0
             s1_idx = 0
@@ -1048,8 +1090,8 @@ def _build_hall_seating_plan(
             even_cap = sum(_room_pair_usable_rows(r) * ((r["columns"] + 1) // 2) for r in rooms_to_use)
             odd_cap = sum(_room_pair_usable_rows(r) * (r["columns"] // 2) for r in rooms_to_use)
             s0, s1 = _partition_stream_strictly(pair_groups, even_cap, odd_cap)
-            s0_queue = [(g["code"], g["instructor"], r) for g in s0 for r in g["rolls"]]
-            s1_queue = [(g["code"], g["instructor"], r) for g in s1 for r in g["rolls"]]
+            s0_queue = _paper_ordered_queue(s0)
+            s1_queue = _paper_ordered_queue(s1)
             s0_idx = 0
             s1_idx = 0
             for room in rooms_to_use:

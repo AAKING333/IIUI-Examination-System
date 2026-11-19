@@ -24,6 +24,7 @@ import './styles/admin.css';
 export default function App() {
   const [currentView, setCurrentView] = useState('slots');
   const [isNavExpanded, setIsNavExpanded] = useState(true);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   // Core Data
   const [health, setHealth] = useState(null);
@@ -75,8 +76,17 @@ export default function App() {
     loadInitialData();
   }, [loadInitialData]);
 
+  useEffect(() => {
+    if (!isMobileNavOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setIsMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMobileNavOpen]);
+
   // Generate Datesheet
-  const handleGenerateDatesheet = async (labMode = 'separate_days') => {
+  const handleGenerateDatesheet = async () => {
     if (!slots || slots.length === 0) {
       showBanner('Validation Error: Cannot generate datesheet: No time slots defined. Please configure time slots first.', 'danger');
       return;
@@ -96,8 +106,7 @@ export default function App() {
 
     setIsGenerating(true);
     try {
-      const modeParam = encodeURIComponent(typeof labMode === 'string' ? labMode : 'separate_days');
-      const res = await fetch(`/api/datesheet/generate?lab_mode=${modeParam}`, { method: 'POST' });
+      const res = await fetch('/api/datesheet/generate', { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(extractErrorMessage(err, 'Datesheet generation failed.'));
@@ -113,32 +122,10 @@ export default function App() {
       loadInitialData();
     } catch (err) {
       const rawMsg = err.message || 'Datesheet generation failed.';
-      const match = rawMsg.match(/(\d+)\s+course\(s\)/i);
-      const unplacedCount = match ? match[1] : null;
-
-      if (unplacedCount) {
-        showBanner(
-          <div className="itms-toast-card">
-            <div className="itms-toast-card__header">
-              <span className="itms-toast-card__title">Scheduling Conflict</span>
-              <span className="itms-toast-card__badge">{unplacedCount} Unplaced</span>
-            </div>
-            <div className="itms-toast-card__desc">
-              Not enough exam dates to place all courses without student clashes.
-            </div>
-            <div className="itms-toast-card__action">
-              <strong>IIUI Rule:</strong> Max 1 exam/day per student. Please configure at least 5 separate dates in Time Slots.
-            </div>
-          </div>,
-          'danger',
-          { autoClose: 7500 }
-        );
-      } else {
-        const cleanMsg = rawMsg
-          .replace(/^Datesheet generation error:\s*/i, '')
-          .replace(/^Critical Error:\s*/i, '');
-        showBanner(cleanMsg, 'danger');
-      }
+      const cleanMsg = rawMsg
+        .replace(/^Datesheet generation error:\s*/i, '')
+        .replace(/^Critical Error:\s*/i, '');
+      showBanner(cleanMsg, 'danger');
     } finally {
       setIsGenerating(false);
     }
@@ -168,7 +155,11 @@ export default function App() {
 
   return (
     <div className="itms-portal-shell">
-      <AdminTopbar />
+      <AdminTopbar
+        health={health}
+        mobileNavOpen={isMobileNavOpen}
+        onMenuClick={() => setIsMobileNavOpen((open) => !open)}
+      />
 
       <ToastContainer
         position="top-right"
@@ -241,11 +232,23 @@ export default function App() {
       />
 
       <div className="itms-portal-body">
+        {isMobileNavOpen && (
+          <div
+            className="itms-sidebar-backdrop"
+            role="presentation"
+            onClick={() => setIsMobileNavOpen(false)}
+          />
+        )}
+
         <AdminSidebar
           active={currentView}
-          onNavigate={(viewId) => setCurrentView(viewId)}
+          onNavigate={(viewId) => {
+            setCurrentView(viewId);
+            setIsMobileNavOpen(false);
+          }}
           expanded={isNavExpanded}
           onToggle={() => setIsNavExpanded((prev) => !prev)}
+          mobileOpen={isMobileNavOpen}
         />
 
         <main className="itms-portal-content">

@@ -66,11 +66,19 @@ def compile_student_exam_allocations() -> List[dict]:
         for entry in datesheet_state.get("datesheet", []):
             code = entry["course_code"]
             c_info = store.get_course(code)
-            in_scheduled_group = (
-                student["program"] == entry.get("program", student["program"])
-                and student["batch"] == entry.get("batch", student["batch"])
-                and student.get("section", "A") in entry.get("sections", [entry.get("section", student.get("section", "A"))])
-            )
+            paper = store.get_paper_section(student["roll_no"], code)
+            if paper:
+                in_scheduled_group = (
+                    paper.get("program") == entry.get("program", paper.get("program"))
+                    and paper.get("batch") == entry.get("batch", paper.get("batch"))
+                    and paper.get("section") in entry.get("sections", [entry.get("section", paper.get("section"))])
+                )
+            else:
+                in_scheduled_group = (
+                    student["program"] == entry.get("program", student["program"])
+                    and student["batch"] == entry.get("batch", student["batch"])
+                    and student.get("section", "A") in entry.get("sections", [entry.get("section", student.get("section", "A"))])
+                )
             if c_info and in_scheduled_group and student["roll_no"] in c_info.get("student_roll_numbers", []):
                 if store.get_attendance_percent(student["roll_no"], code) < 75:
                     continue

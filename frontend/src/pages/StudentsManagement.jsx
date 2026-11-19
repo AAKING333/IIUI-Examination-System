@@ -277,9 +277,6 @@ export default function StudentsManagement({
       <div className="itms-dash__pageHeader">
         <div>
           <h1 className="itms-dash__pageTitle">Students &amp; Course Enrolments Management</h1>
-          <p className="itms-dash__pageSub">
-            Manage student registrations, programs, batches, sections, and course enrolments with Regular and Repeater designations.
-          </p>
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>

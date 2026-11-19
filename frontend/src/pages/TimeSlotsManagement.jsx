@@ -1,55 +1,135 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import Modal from '../components/Modal.jsx';
+import DatePicker from '../components/DatePicker.jsx';
 import { masterDataService } from '../services/index.js';
+import { extractErrorMessage } from '../services/apiClient.js';
 import { formatTime12, formatTimeRange12, formatSlotTime, formatDateAndSlotTime } from '../utils/timeFormat.js';
+import {
+  addDaysISO,
+  daysBetweenISO,
+  formatLongDate,
+  getTodayISO,
+  isValidISODate,
+  parseISODate,
+  toISODate,
+} from '../utils/date.js';
+
+const EXPECTED_DAILY_SESSIONS = { midterm: 4, terminal: 2 };
+const MORNING_SESSIONS = { midterm: 2, terminal: 1 };
+const LONG_BREAK_OPTIONS = [30, 45, 60, 75, 90, 105, 120];
+const DURATION_OPTIONS = [
+  { minutes: 60, label: '1 hour' },
+  { minutes: 75, label: '1 hr 15 min' },
+  { minutes: 90, label: '1 hr 30 min' },
+  { minutes: 105, label: '1 hr 45 min' },
+  { minutes: 120, label: '2 hours' },
+  { minutes: 150, label: '2 hr 30 min' },
+  { minutes: 180, label: '3 hours' },
+];
+const SESSION_BREAK_OPTIONS = [15, 30, 45, 60];
+
+const minutesFromTime = (value) => {
+  if (!value || !value.includes(':')) return 0;
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+const timeFromMinutes = (value) => {
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, value));
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`;
+};
+
+/** Keep the morning sessions fixed and re-time the afternoon sessions so the long break matches. */
+const applyLongBreak = (sessions, breakMinutes, presetKey) => {
+  const split = MORNING_SESSIONS[presetKey];
+  if (!split || sessions.length <= split) return sessions;
+  const gap = minutesFromTime(sessions[split].start_time) - minutesFromTime(sessions[split - 1].end_time);
+  const delta = Number(breakMinutes) - gap;
+  if (!delta) return sessions;
+  return sessions.map((session, index) => (
+    index < split
+      ? session
+      : {
+          ...session,
+          start_time: timeFromMinutes(minutesFromTime(session.start_time) + delta),
+          end_time: timeFromMinutes(minutesFromTime(session.end_time) + delta),
+        }
+  ));
+};
+
+const longBreakLabel = (minutes) => {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours && rest) return `${hours} hr ${rest} min`;
+  if (hours) return `${hours} hr${hours > 1 ? 's' : ''}`;
+  return `${rest} min`;
+};
+
+const presetBreakSummary = (template, presetKey) => {
+  const sessions = template?.sessions || [];
+  const split = MORNING_SESSIONS[presetKey];
+  if (!split || !sessions[split] || !sessions[split - 1]) return null;
+  const minutes = Number(template?.long_break_minutes) || 0;
+  return `${longBreakLabel(minutes)} · ${formatTime12(sessions[split - 1].end_time)} – ${formatTime12(sessions[split].start_time)}`;
+};
 
 export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner }) {
+  const todayISO = getTodayISO();
+
   // Auto-generate modal state
   const [isAutoModalOpen, setIsAutoModalOpen] = useState(false);
   const [generateMode, setGenerateMode] = useState('preset'); // 'preset' | 'custom'
-  const [autoForm, setAutoForm] = useState({
-    from_date: '2026-11-10',
-    to_date: '2026-11-12',
-    start_time: '08:30',
-    end_time: '17:40',
-    duration_minutes: 90,
-    break_minutes: 15,
-    skip_weekends: true,
-    replace_existing: true,
+  const [autoForm, setAutoForm] = useState(() => {
+    const start = getTodayISO();
+    return {
+      from_date: start,
+      to_date: addDaysISO(start, 2),
+      start_time: '08:30',
+      end_time: '17:40',
+      duration_minutes: 90,
+      break_minutes: 15,
+      sessions_per_day: 4,
+      long_break_minutes: 120,
+      skip_weekends: true,
+      replace_existing: true,
+    };
   });
 
   // Single Slot Add / Edit modal state
   const [isSingleModalOpen, setIsSingleModalOpen] = useState(false);
   const [editingSlot, setEditingSlot] = useState(null);
-  const [singleFormData, setSingleFormData] = useState({
-    date: '2026-10-26',
+  const [singleFormData, setSingleFormData] = useState(() => ({
+    date: getTodayISO(),
     start_time: '08:45',
     end_time: '10:15',
     label: 'Morning 1',
     slot_type: 'written',
-  });
-  const [presetDate, setPresetDate] = useState('2026-10-26');
+  }));
+  const [presetDate, setPresetDate] = useState(() => getTodayISO());
   const [studyHolidays, setStudyHolidays] = useState('');
   const [selectedPreset, setSelectedPreset] = useState('midterm'); // 'midterm' | 'terminal'
+  const [labMode, setLabMode] = useState('separate_days'); // 'separate_days' | 'concurrent'
 
   // Editable Preset Templates
   const [presetTemplates, setPresetTemplates] = useState({
     midterm: {
       name: 'Midterm Examination',
       days: 8,
+      long_break_minutes: 120,
       sessions: [
         { start_time: '08:45', end_time: '10:15', label: 'Morning 1', slot_type: 'written' },
         { start_time: '10:30', end_time: '12:00', label: 'Morning 2', slot_type: 'written' },
-        { start_time: '14:30', end_time: '16:00', label: 'Afternoon 1', slot_type: 'written' },
-        { start_time: '16:15', end_time: '17:45', label: 'Afternoon 2', slot_type: 'written' },
+        { start_time: '14:00', end_time: '15:30', label: 'Afternoon 1', slot_type: 'written' },
+        { start_time: '15:45', end_time: '17:15', label: 'Afternoon 2', slot_type: 'written' },
       ],
     },
     terminal: {
       name: 'Terminal Examination',
       days: 18,
+      long_break_minutes: 120,
       sessions: [
         { start_time: '08:45', end_time: '11:45', label: 'Morning', slot_type: 'written' },
-        { start_time: '14:30', end_time: '17:30', label: 'Afternoon', slot_type: 'written' },
+        { start_time: '13:45', end_time: '16:45', label: 'Afternoon', slot_type: 'written' },
       ],
     },
   });
@@ -61,8 +141,31 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
     masterDataService.getPresetTemplates()
       .then((data) => {
         if (data && data.midterm && data.terminal) {
-          setPresetTemplates(data);
+          const normalize = (key) => {
+            const tpl = data[key];
+            const expected = EXPECTED_DAILY_SESSIONS[key];
+            const storedBreak = Number(tpl?.long_break_minutes);
+            const breakMinutes = LONG_BREAK_OPTIONS.includes(storedBreak) ? storedBreak : 120;
+            const sessions = (tpl?.sessions || [])
+              .slice(0, expected)
+              .map((session) => ({ ...session }));
+            return {
+              ...tpl,
+              long_break_minutes: breakMinutes,
+              sessions: applyLongBreak(sessions, breakMinutes, key),
+            };
+          };
+          setPresetTemplates({ midterm: normalize('midterm'), terminal: normalize('terminal') });
         }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/time-slots/lab-mode')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.lab_mode) setLabMode(data.lab_mode);
       })
       .catch(() => {});
   }, []);
@@ -75,6 +178,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
     setPresetEditForm({
       name: current.name || (presetKey === 'midterm' ? 'Midterm Examination' : 'Terminal Examination'),
       days: current.days || (presetKey === 'midterm' ? 8 : 18),
+      long_break_minutes: Number(current.long_break_minutes) || 120,
       sessions: (current.sessions || []).map((s) => ({ ...s })),
     });
   };
@@ -98,6 +202,29 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       showBanner?.(`Validation Error: Exam duration cannot exceed the maximum threshold of 18 days. (Provided: ${days} days)`, 'danger');
       return;
     }
+    const expectedSessions = EXPECTED_DAILY_SESSIONS[editingPresetKey];
+    if (presetEditForm.sessions.length !== expectedSessions) {
+      showBanner?.(
+        `Validation Error: ${editingPresetKey === 'midterm' ? 'Midterms' : 'Terminal exams'} must have exactly ${expectedSessions} daily sessions.`,
+        'danger',
+      );
+      return;
+    }
+    const breakMinutes = Number(presetEditForm.long_break_minutes);
+    if (!LONG_BREAK_OPTIONS.includes(breakMinutes)) {
+      showBanner?.('Validation Error: The long break must be between 30 minutes and 2 hours.', 'danger');
+      return;
+    }
+    let previousEnd = -1;
+    for (const session of presetEditForm.sessions) {
+      const start = minutesFromTime(session.start_time);
+      const end = minutesFromTime(session.end_time);
+      if (!session.start_time || !session.end_time || end <= start || start < previousEnd) {
+        showBanner?.('Validation Error: Session times must be in order and must not overlap.', 'danger');
+        return;
+      }
+      previousEnd = end;
+    }
 
     const updated = {
       ...presetTemplates,
@@ -105,6 +232,8 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         ...presetTemplates[editingPresetKey],
         ...presetEditForm,
         days: days,
+        long_break_minutes: breakMinutes,
+        sessions: applyLongBreak(presetEditForm.sessions, breakMinutes, editingPresetKey),
       },
     };
     try {
@@ -128,6 +257,36 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
 
   const distinctDays = Array.from(new Set(slots.map((s) => s.date))).length;
 
+  // Group slots into one block per examination day.
+  const dayBlocks = useMemo(() => {
+    const dayMap = new Map();
+    const sorted = [...slots].sort(
+      (a, b) =>
+        String(a.date || '').localeCompare(String(b.date || '')) ||
+        String(a.start_time || '').localeCompare(String(b.start_time || ''))
+    );
+    sorted.forEach((slot) => {
+      const key = slot.date || 'Unscheduled';
+      if (!dayMap.has(key)) dayMap.set(key, []);
+      dayMap.get(key).push(slot);
+    });
+
+    return Array.from(dayMap.entries()).map(([date, daySlots]) => {
+      const parsed = parseISODate(date);
+      return {
+        date,
+        slots: daySlots,
+        isPast: date < todayISO,
+        weekday: parsed
+          ? parsed.toLocaleDateString('en-US', { weekday: 'long' })
+          : 'Unscheduled',
+        dateDisplay: parsed
+          ? parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+          : 'No date assigned',
+      };
+    });
+  }, [slots, todayISO]);
+
   // Helper time math
   const timeToMin = (tStr) => {
     if (!tStr) return 0;
@@ -144,11 +303,26 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
   // Live calculation preview for auto generation
   const previewCalculation = useMemo(() => {
     try {
-      const dStart = new Date(autoForm.from_date);
-      const dEnd = new Date(autoForm.to_date);
+      const dStart = parseISODate(autoForm.from_date);
+      const dEnd = parseISODate(autoForm.to_date);
 
-      if (isNaN(dStart.getTime()) || isNaN(dEnd.getTime())) {
+      if (!dStart || !dEnd) {
         return { valid: false, error: 'Validation Error: Please select valid examination dates.' };
+      }
+
+      const today = getTodayISO();
+      if (autoForm.from_date < today) {
+        return {
+          valid: false,
+          error: `Validation Error: Past dates are locked. From Date must be ${formatLongDate(today)} or later.`,
+        };
+      }
+
+      if (autoForm.to_date < today) {
+        return {
+          valid: false,
+          error: `Validation Error: Past dates are locked. To Date must be ${formatLongDate(today)} or later.`,
+        };
       }
 
       if (dEnd < dStart) {
@@ -158,7 +332,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         };
       }
 
-      const diffDays = Math.round((dEnd - dStart) / (1000 * 60 * 60 * 24)) + 1;
+      const diffDays = daysBetweenISO(autoForm.from_date, autoForm.to_date) + 1;
       if (diffDays > 18) {
         return {
           valid: false,
@@ -167,49 +341,53 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       }
 
       const startMin = timeToMin(autoForm.start_time);
-      const endMin = timeToMin(autoForm.end_time);
       const duration = Number(autoForm.duration_minutes) || 0;
       const breakMin = Number(autoForm.break_minutes) || 0;
+      const sessionsPerDay = Number(autoForm.sessions_per_day) || 0;
+      const longBreak = Number(autoForm.long_break_minutes) || 0;
 
+      if (![2, 4].includes(sessionsPerDay)) {
+        return { valid: false, error: 'Validation Error: Daily sessions must be 4 (midterms) or 2 (terminal exams).' };
+      }
       if (breakMin <= 0) {
         return {
           valid: false,
           error: 'Validation Error: Break duration cannot be zero. Break must be at least 15 minutes (options: 15, 30, 45, or 60 minutes).',
         };
       }
-
       if (duration <= 0) {
-        return { valid: false, error: 'Validation Error: Slot duration must be greater than 0.' };
+        return { valid: false, error: 'Validation Error: Paper duration must be greater than 0.' };
       }
-      if (endMin <= startMin) {
-        return { valid: false, error: 'Validation Error: Day end time must be later than start time.' };
-      }
-      if (endMin - startMin < duration) {
-        return { valid: false, error: `Validation Error: Day time window (${endMin - startMin} mins) is shorter than a single slot duration (${duration} mins).` };
+      if (longBreak < 30 || longBreak > 120) {
+        return { valid: false, error: 'Validation Error: The long break must be between 30 minutes and 2 hours.' };
       }
 
-      // Compute day slots
+      const morningCount = sessionsPerDay / 2;
       const daySlots = [];
       let curr = startMin;
-      let sessionIndex = 1;
 
-      while (curr + duration <= endMin) {
+      for (let index = 0; index < sessionsPerDay; index += 1) {
+        if (index > 0) {
+          curr += index === morningCount ? longBreak : breakMin;
+        }
         const slotEnd = curr + duration;
-        let label = `Session ${sessionIndex}`;
-        if (sessionIndex === 1) label = 'Morning 1';
-        else if (sessionIndex === 2) label = 'Morning 2';
-        else if (sessionIndex === 3) label = 'Afternoon 1';
-        else if (sessionIndex === 4) label = 'Afternoon 2';
-        else if (sessionIndex === 5) label = 'Evening 1';
+        if (slotEnd > 24 * 60) {
+          return { valid: false, error: 'Validation Error: Daily sessions finish after midnight. Reduce the paper duration or a break.' };
+        }
+        let label = `Session ${index + 1}`;
+        if (sessionsPerDay === 2) {
+          label = index === 0 ? 'Morning' : 'Afternoon';
+        } else if (index === 0) label = 'Morning 1';
+        else if (index === 1) label = 'Morning 2';
+        else if (index === 2) label = 'Afternoon 1';
+        else label = 'Afternoon 2';
 
         daySlots.push({
           start: minToTime(curr),
           end: minToTime(slotEnd),
           label,
         });
-
-        sessionIndex += 1;
-        curr = slotEnd + breakMin;
+        curr = slotEnd;
       }
 
       // Count dates
@@ -222,7 +400,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         if (!(autoForm.skip_weekends && (dayOfWeek === 0 || dayOfWeek === 6))) {
           dateCount += 1;
           if (sampleDates.length < 5) {
-            sampleDates.push(curDate.toISOString().slice(0, 10));
+            sampleDates.push(toISODate(curDate));
           }
         }
         curDate.setDate(curDate.getDate() + 1);
@@ -232,6 +410,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         valid: true,
         slotsPerDay: daySlots.length,
         daySlots,
+        endTime: daySlots[daySlots.length - 1].end,
         dateCount,
         sampleDates,
         totalSlots: daySlots.length * dateCount,
@@ -258,17 +437,20 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           from_date: autoForm.from_date,
           to_date: autoForm.to_date,
           start_time: autoForm.start_time,
-          end_time: autoForm.end_time,
+          end_time: previewCalculation.endTime,
           duration_minutes: Number(autoForm.duration_minutes),
           break_minutes: Number(autoForm.break_minutes),
+          sessions_per_day: Number(autoForm.sessions_per_day),
+          long_break_minutes: Number(autoForm.long_break_minutes),
           skip_weekends: autoForm.skip_weekends,
           replace_existing: autoForm.replace_existing,
+          lab_mode: labMode,
         }),
       });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to auto-generate slots.');
+        throw new Error(extractErrorMessage(err, 'Failed to auto-generate slots.'));
       }
 
       const data = await res.json();
@@ -289,7 +471,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
   const handleOpenAddSingle = () => {
     setEditingSlot(null);
     setSingleFormData({
-      date: slots.length ? slots[slots.length - 1].date : '2026-10-26',
+      date: getTodayISO(),
       start_time: '08:45',
       end_time: '10:15',
       label: 'Morning 1',
@@ -311,10 +493,40 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
   };
 
   const handleRequestPreset = (preset) => {
-    if (!presetDate) {
+    const today = getTodayISO();
+    if (!presetDate || !isValidISODate(presetDate)) {
       showBanner('Validation Error: Choose a valid start date for the exam preset.', 'danger');
       return;
     }
+    if (presetDate < today) {
+      showBanner(
+        `Validation Error: Past dates are locked. The exam start date must be ${formatLongDate(today)} or later.`,
+        'danger'
+      );
+      return;
+    }
+
+    const holidayValues = studyHolidays
+      .split(',')
+      .map((date) => date.trim())
+      .filter(Boolean);
+    const invalidHoliday = holidayValues.find((date) => !isValidISODate(date));
+    if (invalidHoliday) {
+      showBanner(
+        `Validation Error: "${invalidHoliday}" is not a valid study-holiday date. Use YYYY-MM-DD format.`,
+        'danger'
+      );
+      return;
+    }
+    const pastHoliday = holidayValues.find((date) => date < today);
+    if (pastHoliday) {
+      showBanner(
+        `Validation Error: Study holiday ${formatLongDate(pastHoliday)} has already passed. Only ${formatLongDate(today)} or later dates are allowed.`,
+        'danger'
+      );
+      return;
+    }
+
     const template = presetTemplates[preset];
     const days = Number(template?.days || (preset === 'midterm' ? 8 : 18));
     if (preset === 'midterm' && (days < 7 || days > 10)) {
@@ -349,12 +561,13 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           study_holidays: studyHolidays.split(',').map((date) => date.trim()).filter(Boolean),
           replace_existing: true,
           requested_days: template?.days,
-          custom_sessions: template?.sessions,
+          long_break_minutes: Number(template?.long_break_minutes) || 120,
+          lab_mode: labMode,
         }),
       });
       if (!res.ok) {
         const error = await res.json().catch(() => ({}));
-        throw new Error(error.detail || 'Preset creation failed.');
+        throw new Error(extractErrorMessage(error, 'Preset creation failed.'));
       }
       const result = await res.json();
       showBanner(result.message, 'success');
@@ -372,6 +585,18 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
     e.preventDefault();
     if (!singleFormData.date || !singleFormData.start_time || !singleFormData.end_time) {
       showBanner('Validation Error: Date, start time, and end time are required.', 'danger');
+      return;
+    }
+    if (!isValidISODate(singleFormData.date)) {
+      showBanner('Validation Error: Choose a valid examination date from the calendar.', 'danger');
+      return;
+    }
+    const today = getTodayISO();
+    if (singleFormData.date < today) {
+      showBanner(
+        `Validation Error: ${formatLongDate(singleFormData.date)} has already passed. Choose ${formatLongDate(today)} or a later date.`,
+        'danger'
+      );
       return;
     }
 
@@ -392,7 +617,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.detail || 'Failed to update time slot.');
+          throw new Error(extractErrorMessage(errData, 'Failed to update time slot.'));
         }
         showBanner(`Time Slot "${editingSlot.id}" updated successfully.`, 'success');
       } else {
@@ -403,7 +628,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.detail || 'Failed to create time slot.');
+          throw new Error(extractErrorMessage(errData, 'Failed to create time slot.'));
         }
         showBanner('New time slot added successfully.', 'success');
       }
@@ -446,28 +671,11 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
     }
   };
 
-  const formatDisplayDate = (dStr) => {
-    try {
-      const d = new Date(dStr);
-      return d.toLocaleDateString('en-US', {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-    } catch {
-      return dStr;
-    }
-  };
-
   return (
     <div className="itms-dash__main">
       <div className="itms-dash__pageHeader">
         <div>
           <h1 className="itms-dash__pageTitle">Exam Dates &amp; Time Slots</h1>
-          <p className="itms-dash__pageSub">
-            Configure examination dates, daily operational windows, and session timings (Morning/Afternoon).
-          </p>
         </div>
 
         <div className="toolbar__actions">
@@ -528,34 +736,44 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
         </article>
       </section>
 
-      <div className="card-table-wrapper">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Slot ID</th>
-              <th>Calendar Date</th>
-              <th>Day of Week</th>
-              <th>Session Window</th>
-              <th style={{ textAlign: 'right' }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {slots.map((s) => (
-              <tr key={s.id}>
-                <td>
-                  <span className="badge badge--info">{s.id}</span>
-                </td>
-                <td>
-                  <strong>{s.date}</strong>
-                </td>
-                <td>{formatDisplayDate(s.date)}</td>
-                <td>
-                  <span className="badge badge--muted" style={{ fontWeight: 600 }}>
-                    {formatTimeRange12(s.start_time, s.end_time)}
-                  </span>
-                </td>
-                <td style={{ textAlign: 'right' }}>
-                  <div style={{ display: 'inline-flex', gap: '0.4rem' }}>
+      <div className="slot-day-list">
+        {dayBlocks.map((group) => (
+          <section
+            key={group.date}
+            className={`slot-day-block${group.isPast ? ' slot-day-block--past' : ''}`}
+            aria-label={`${group.weekday}, ${group.dateDisplay}: ${group.slots.length} session${group.slots.length === 1 ? '' : 's'}`}
+          >
+            <header className="slot-day-block__header">
+              <div className="slot-day-block__date">
+                <span className="slot-day-block__weekday">{group.weekday}</span>
+                <span className="slot-day-block__dateText">{group.dateDisplay}</span>
+              </div>
+              <div className="slot-day-block__meta">
+                {group.isPast && <span className="badge badge--muted">Past</span>}
+                {group.slots.length > 0 && group.slots.every((s) => s.slot_type === 'lab') && (
+                  <span className="badge badge--info">Lab day</span>
+                )}
+                <span className="badge badge--info">
+                  {group.slots.length} session{group.slots.length === 1 ? '' : 's'}
+                </span>
+              </div>
+            </header>
+
+            <div className="slot-day-block__ids" aria-label="Slot IDs for this day">
+              {group.slots.map((s) => (
+                <span key={s.id} className="slot-id-chip">{s.id}</span>
+              ))}
+            </div>
+
+            <ul className="slot-day-block__rows">
+              {group.slots.map((s) => (
+                <li key={s.id} className="slot-day-row">
+                  <span className="slot-day-row__id">{s.id}</span>
+                  <div className="slot-day-row__session">
+                    <strong>{formatTimeRange12(s.start_time, s.end_time)}</strong>
+                    {s.label && <span className="slot-day-row__label">{s.label}</span>}
+                  </div>
+                  <div className="slot-day-row__actions">
                     <button
                       type="button"
                       className="btn btn--outline btn--sm"
@@ -573,25 +791,23 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                       Delete
                     </button>
                   </div>
-                </td>
-              </tr>
-            ))}
-            {slots.length === 0 && (
-              <tr>
-                <td colSpan={5} style={{ textAlign: 'center', padding: '3rem' }}>
-                  <p style={{ margin: 0, fontWeight: 500, color: 'var(--itms-text-muted)' }}>
-                    No time slots configured. Click "Auto Generate Time Slots" above to generate them automatically.
-                  </p>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+
+        {slots.length === 0 && (
+          <div className="slot-day-empty">
+            <p>No time slots configured. Click "Auto Generate Time Slots" above to generate them automatically.</p>
+          </div>
+        )}
       </div>
 
       {/* Generation & Presets Modal */}
       <Modal
         isOpen={isAutoModalOpen}
+        busy={isSubmitting}
         title="Generate Examination Time Slots"
         size="lg"
         onClose={() => setIsAutoModalOpen(false)}
@@ -680,19 +896,30 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
           </button>
         </div>
 
+        <div className="form-group" style={{ marginBottom: '1.1rem' }}>
+          <label className="form-label" style={{ fontWeight: 600 }}>Lab Days</label>
+          <select
+            className="form-control"
+            value={labMode}
+            onChange={(e) => setLabMode(e.target.value)}
+          >
+            <option value="separate_days">Separate — last 2 exam days reserved for labs</option>
+            <option value="concurrent">Concurrent — labs on the same day as regular papers</option>
+          </select>
+        </div>
+
         {generateMode === 'preset' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label" style={{ fontWeight: 600 }}>Exam Start Date</label>
-                <input
-                  type="date"
-                  className="form-control"
+                <DatePicker
+                  id="preset-start-date"
                   value={presetDate}
-                  onChange={(e) => setPresetDate(e.target.value)}
-                  required
+                  onChange={setPresetDate}
+                  onInvalid={(message) => showBanner(message, 'danger')}
+                  placeholder="Select first examination date"
                 />
-                <span className="form-hint">First examination date</span>
               </div>
               <div className="form-group">
                 <label className="form-label" style={{ fontWeight: 600 }}>Study Holidays (Optional)</label>
@@ -701,9 +928,8 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   className="form-control"
                   value={studyHolidays}
                   onChange={(e) => setStudyHolidays(e.target.value)}
-                  placeholder="e.g. 2026-11-01, 2026-11-05"
+                  placeholder="e.g. 2026-11-27, 2026-12-01"
                 />
-                <span className="form-hint">Comma-separated dates to skip (YYYY-MM-DD)</span>
               </div>
             </div>
 
@@ -711,7 +937,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
               <label className="form-label" style={{ fontWeight: 600, marginBottom: '0.5rem', display: 'block' }}>
                 Select Preset Schedule
               </label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+              <div className="preset-choice-grid">
                 {/* Midterm Card */}
                 <div
                   onClick={() => setSelectedPreset('midterm')}
@@ -776,6 +1002,11 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                         <strong style={{ color: 'var(--iiui-navy)' }}>{formatTimeRange12(sess.start_time, sess.end_time)}</strong>
                       </div>
                     ))}
+                    {presetBreakSummary(presetTemplates.midterm, 'midterm') && (
+                      <div style={{ marginTop: '4px', color: '#166534', fontWeight: 600 }}>
+                        Long break: {presetBreakSummary(presetTemplates.midterm, 'midterm')}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -843,6 +1074,11 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                         <strong style={{ color: 'var(--iiui-navy)' }}>{formatTimeRange12(sess.start_time, sess.end_time)}</strong>
                       </div>
                     ))}
+                    {presetBreakSummary(presetTemplates.terminal, 'terminal') && (
+                      <div style={{ marginTop: '4px', color: '#0369a1', fontWeight: 600 }}>
+                        Long break: {presetBreakSummary(presetTemplates.terminal, 'terminal')}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -853,25 +1089,33 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">From Date</label>
-                <input
-                  type="date"
-                  className="form-control"
+                <DatePicker
+                  id="auto-from-date"
                   value={autoForm.from_date}
-                  onChange={(e) => setAutoForm({ ...autoForm, from_date: e.target.value })}
-                  required
+                  onChange={(date) =>
+                    setAutoForm((current) => {
+                      const latestEnd = addDaysISO(date, 17);
+                      let nextEnd = current.to_date;
+                      if (nextEnd < date) nextEnd = date;
+                      if (nextEnd > latestEnd) nextEnd = latestEnd;
+                      return { ...current, from_date: date, to_date: nextEnd };
+                    })
+                  }
+                  onInvalid={(message) => showBanner(message, 'danger')}
+                  placeholder="Select start date"
                 />
-                <span className="form-hint">Start date (must be earlier than or equal to To Date).</span>
               </div>
               <div className="form-group">
                 <label className="form-label">To Date</label>
-                <input
-                  type="date"
-                  className="form-control"
+                <DatePicker
+                  id="auto-to-date"
                   value={autoForm.to_date}
-                  onChange={(e) => setAutoForm({ ...autoForm, to_date: e.target.value })}
-                  required
+                  min={autoForm.from_date}
+                  max={addDaysISO(autoForm.from_date, 17)}
+                  onChange={(date) => setAutoForm({ ...autoForm, to_date: date })}
+                  onInvalid={(message) => showBanner(message, 'danger')}
+                  placeholder="Select end date"
                 />
-                <span className="form-hint">End date (max 18 days threshold).</span>
               </div>
             </div>
 
@@ -885,87 +1129,77 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   onChange={(e) => setAutoForm({ ...autoForm, start_time: e.target.value })}
                   required
                 />
-                <span className="form-hint">e.g. 08:30 (Morning start)</span>
               </div>
               <div className="form-group">
-                <label className="form-label">Daily Exam End Time</label>
-                <input
-                  type="time"
+                <label className="form-label">Daily Sessions</label>
+                <select
                   className="form-control"
-                  value={autoForm.end_time}
-                  onChange={(e) => setAutoForm({ ...autoForm, end_time: e.target.value })}
-                  required
-                />
-                <span className="form-hint">e.g. 17:40 (Evening close)</span>
+                  value={autoForm.sessions_per_day}
+                  onChange={(e) => setAutoForm({ ...autoForm, sessions_per_day: Number(e.target.value) })}
+                >
+                  <option value={4}>4 sessions (Midterms)</option>
+                  <option value={2}>2 sessions (Terminal)</option>
+                </select>
               </div>
             </div>
 
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">Slot Duration (Minutes)</label>
-                <input
-                  type="number"
-                  min="15"
-                  max="300"
-                  step="5"
+                <label className="form-label">Paper Duration</label>
+                <select
                   className="form-control"
                   value={autoForm.duration_minutes}
-                  onChange={(e) =>
-                    setAutoForm({ ...autoForm, duration_minutes: parseInt(e.target.value, 10) || 0 })
-                  }
-                  required
-                />
-                <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
-                  {[
-                    { m: 90, label: '1 hr 30 mins (90m)' },
-                    { m: 75, label: '1 hr 15 mins (75m)' },
-                    { m: 120, label: '2 hrs (120m)' },
-                  ].map((preset) => (
-                    <button
-                      key={preset.m}
-                      type="button"
-                      className={`btn btn--sm ${autoForm.duration_minutes === preset.m ? 'btn--primary' : 'btn--outline'}`}
-                      onClick={() => setAutoForm({ ...autoForm, duration_minutes: preset.m })}
-                    >
-                      {preset.label}
-                    </button>
+                  onChange={(e) => setAutoForm({ ...autoForm, duration_minutes: Number(e.target.value) })}
+                >
+                  {DURATION_OPTIONS.map((option) => (
+                    <option key={option.minutes} value={option.minutes}>{option.label}</option>
                   ))}
-                </div>
+                </select>
               </div>
 
+              {Number(autoForm.sessions_per_day) === 4 && (
+                <div className="form-group">
+                  <label className="form-label">Break Between Sessions</label>
+                  <select
+                    className="form-control"
+                    value={autoForm.break_minutes}
+                    onChange={(e) => setAutoForm({ ...autoForm, break_minutes: Number(e.target.value) })}
+                  >
+                    {SESSION_BREAK_OPTIONS.map((minutes) => (
+                      <option key={minutes} value={minutes}>{longBreakLabel(minutes)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="form-row">
               <div className="form-group">
-                <label className="form-label">Interval / Break Between Slots (Minutes)</label>
-                <input
-                  type="number"
-                  min="15"
-                  max="120"
-                  step="5"
+                <label className="form-label">Long Break (Morning → Afternoon)</label>
+                <select
                   className="form-control"
-                  value={autoForm.break_minutes}
-                  onChange={(e) =>
-                    setAutoForm({ ...autoForm, break_minutes: parseInt(e.target.value, 10) || 0 })
-                  }
-                  required
-                />
-                <span className="form-hint" style={{ color: '#b91c1c' }}>
-                  *Break duration cannot be zero (minimum 15 mins, max 60 mins).
-                </span>
-                <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
-                  {[
-                    { m: 15, label: '15 mins (Default)' },
-                    { m: 30, label: '30 mins' },
-                    { m: 45, label: '45 mins' },
-                    { m: 60, label: '60 mins' },
-                  ].map((preset) => (
-                    <button
-                      key={preset.m}
-                      type="button"
-                      className={`btn btn--sm ${autoForm.break_minutes === preset.m ? 'btn--primary' : 'btn--outline'}`}
-                      onClick={() => setAutoForm({ ...autoForm, break_minutes: preset.m })}
-                    >
-                      {preset.label}
-                    </button>
+                  value={autoForm.long_break_minutes}
+                  onChange={(e) => setAutoForm({ ...autoForm, long_break_minutes: Number(e.target.value) })}
+                >
+                  {LONG_BREAK_OPTIONS.map((minutes) => (
+                    <option key={minutes} value={minutes}>{longBreakLabel(minutes)}</option>
                   ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Daily End Time (Auto-calculated)</label>
+                <div
+                  className="form-control"
+                  style={{
+                    background: '#f8f5ec',
+                    border: '1px solid #e2e0d6',
+                    fontWeight: 600,
+                    color: 'var(--iiui-navy, #1e3a5f)',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  {previewCalculation.valid ? formatTime12(previewCalculation.endTime) : '—'}
                 </div>
               </div>
             </div>
@@ -996,6 +1230,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       {/* Single Add / Edit Modal */}
       <Modal
         isOpen={isSingleModalOpen}
+        busy={isSubmitting}
         title={editingSlot ? `Edit Slot ${editingSlot.id}` : 'Create Single Examination Slot'}
         onClose={() => setIsSingleModalOpen(false)}
         footer={
@@ -1021,13 +1256,13 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       >
         <form onSubmit={handleSingleSubmit}>
           <div className="form-group">
-            <label className="form-label">Examination Date (YYYY-MM-DD)</label>
-            <input
-              type="date"
-              className="form-control"
+            <label className="form-label">Examination Date</label>
+            <DatePicker
+              id="single-slot-date"
               value={singleFormData.date}
-              onChange={(e) => setSingleFormData({ ...singleFormData, date: e.target.value })}
-              required
+              onChange={(date) => setSingleFormData({ ...singleFormData, date })}
+              onInvalid={(message) => showBanner(message, 'danger')}
+              placeholder="Select examination date"
             />
           </div>
 
@@ -1074,6 +1309,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       {/* Delete Confirmation Modal */}
       <Modal
         isOpen={Boolean(deleteConfirm)}
+        busy={isSubmitting}
         title="Confirm Slot Deletion"
         onClose={() => setDeleteConfirm(null)}
         footer={
@@ -1106,6 +1342,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       {/* Clear All Confirmation Modal */}
       <Modal
         isOpen={clearAllConfirm}
+        busy={isSubmitting}
         title="Confirm Clear All Time Slots"
         onClose={() => setClearAllConfirm(false)}
         footer={
@@ -1140,6 +1377,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       {/* Preset Customization / Edit Modal */}
       <Modal
         isOpen={Boolean(editingPresetKey && presetEditForm)}
+        busy={isSubmitting}
         title={`Customize ${presetEditForm?.name || 'Preset'}`}
         size="md"
         onClose={() => { setEditingPresetKey(null); setPresetEditForm(null); }}
@@ -1190,36 +1428,37 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                   onChange={(e) => setPresetEditForm({ ...presetEditForm, days: parseInt(e.target.value, 10) || 1 })}
                   required
                 />
-                <span className="form-hint">
-                  {editingPresetKey === 'midterm' ? 'Threshold: 7 to 10 days.' : 'Threshold: max 18 days.'}
-                </span>
               </div>
             </div>
 
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', gap: '0.75rem', flexWrap: 'wrap' }}>
                 <label className="form-label" style={{ fontWeight: 600, margin: 0 }}>
-                  Daily Examination Sessions ({presetEditForm.sessions.length})
+                  Daily Examination Sessions ({presetEditForm.sessions.length}) — fixed for {editingPresetKey === 'midterm' ? 'midterms' : 'terminal exams'}
                 </label>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--outline"
-                  onClick={() => {
-                    const newSession = {
-                      start_time: '08:45',
-                      end_time: '10:15',
-                      label: `Session ${presetEditForm.sessions.length + 1}`,
-                      slot_type: 'written',
-                    };
-                    setPresetEditForm({
-                      ...presetEditForm,
-                      sessions: [...presetEditForm.sessions, newSession],
-                    });
-                  }}
-                  style={{ fontSize: '0.74rem', padding: '2px 8px' }}
-                >
-                  + Add Session
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                  <label htmlFor="preset-long-break" style={{ fontSize: '0.76rem', fontWeight: 600, color: 'var(--iiui-navy)' }}>
+                    Morning → Afternoon Break
+                  </label>
+                  <select
+                    id="preset-long-break"
+                    className="form-control"
+                    style={{ width: 'auto', fontSize: '0.78rem', padding: '4px 8px' }}
+                    value={presetEditForm.long_break_minutes}
+                    onChange={(e) => {
+                      const breakMinutes = Number(e.target.value);
+                      setPresetEditForm({
+                        ...presetEditForm,
+                        long_break_minutes: breakMinutes,
+                        sessions: applyLongBreak(presetEditForm.sessions, breakMinutes, editingPresetKey),
+                      });
+                    }}
+                  >
+                    {LONG_BREAK_OPTIONS.map((minutes) => (
+                      <option key={minutes} value={minutes}>{longBreakLabel(minutes)}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -1276,20 +1515,6 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
                     <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--iiui-navy)', minWidth: '135px' }}>
                       {formatTimeRange12(sess.start_time, sess.end_time)}
                     </span>
-                    {presetEditForm.sessions.length > 1 && (
-                      <button
-                        type="button"
-                        className="btn btn--danger btn--sm"
-                        style={{ padding: '2px 6px', fontSize: '0.74rem' }}
-                        onClick={() => {
-                          const copy = presetEditForm.sessions.filter((_, i) => i !== sIdx);
-                          setPresetEditForm({ ...presetEditForm, sessions: copy });
-                        }}
-                        title="Remove session"
-                      >
-                        Delete
-                      </button>
-                    )}
                   </div>
                 ))}
               </div>
@@ -1301,6 +1526,7 @@ export default function TimeSlotsManagement({ slots = [], onRefresh, showBanner 
       {/* Preset Replace Confirmation Modal */}
       <Modal
         isOpen={Boolean(presetConfirm)}
+        busy={isSubmitting}
         title="Confirm Preset Application"
         onClose={() => setPresetConfirm(null)}
         footer={

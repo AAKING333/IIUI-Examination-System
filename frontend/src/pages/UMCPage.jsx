@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { examOpsService } from '../services/index.js';
+import { examOpsService, seatingService } from '../services/index.js';
 import Modal from '../components/Modal.jsx';
 import { formatTimeRange12 } from '../utils/timeFormat.js';
 
@@ -46,6 +46,9 @@ export default function UMCPage({
   });
 
   // New report form state
+  const [reportDate, setReportDate] = useState('');
+  const [slotPlan, setSlotPlan] = useState(null);
+  const [isPlanLoading, setIsPlanLoading] = useState(false);
   const [newReport, setNewReport] = useState(EMPTY_REPORT);
   const [photos, setPhotos] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -73,7 +76,7 @@ export default function UMCPage({
     loadReports();
   }, [loadReports]);
 
-  // Derived options for Add Incident Form
+  // Derived options for the UMC filing form: Day -> Session -> Room -> Course -> Student
   const slotEntries = useMemo(() => datesheet?.datesheet || [], [datesheet]);
 
   const reportSlots = useMemo(() => {
@@ -81,14 +84,92 @@ export default function UMCPage({
     return slots.filter((s) => ids.has(s.id));
   }, [slotEntries, slots]);
 
+  const reportDates = useMemo(
+    () => Array.from(new Set(reportSlots.map((s) => s.date))),
+    [reportSlots]
+  );
+
+  const sessionsForDate = useMemo(
+    () => reportSlots.filter((s) => s.date === reportDate),
+    [reportSlots, reportDate]
+  );
+
   const entriesForSlot = useMemo(
     () => slotEntries.filter((e) => e.slot_id === newReport.slot_id),
     [newReport.slot_id, slotEntries]
   );
 
-  const selectedEntry = entriesForSlot.find(
-    (e) => e.course_code === newReport.course_code
+  const selectedEntry = entriesForSlot.find((e) => e.course_code === newReport.course_code);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!newReport.slot_id) {
+      setSlotPlan(null);
+      setIsPlanLoading(false);
+      return undefined;
+    }
+    setIsPlanLoading(true);
+    seatingService
+      .getSeatingPlan(newReport.slot_id)
+      .then((plan) => {
+        if (!cancelled) setSlotPlan(plan);
+      })
+      .catch(() => {
+        if (!cancelled) setSlotPlan(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsPlanLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [newReport.slot_id]);
+
+  const planRooms = useMemo(
+    () => (slotPlan?.rooms || []).filter((r) => (r.seated || 0) > 0),
+    [slotPlan]
   );
+
+  const roomOptions = useMemo(() => {
+    if (planRooms.length) {
+      return planRooms.map((r) => ({ id: r.room_id, name: r.room_name, plan: r }));
+    }
+    return rooms.map((r) => ({ id: r.id, name: r.name, plan: null }));
+  }, [planRooms, rooms]);
+
+  const selectedRoomPlan = planRooms.find((r) => r.room_id === newReport.room_id) || null;
+
+  const roomCourses = useMemo(() => {
+    if (selectedRoomPlan) {
+      const codes = new Set();
+      (selectedRoomPlan.column_papers || []).forEach((p) => {
+        const code = String(p || '').replace(/-T\d+$/, '');
+        if (code) codes.add(code);
+      });
+      (selectedRoomPlan.grid || []).forEach((row) =>
+        (row || []).forEach((cell) => {
+          if (cell?.course_code) {
+            const code = String(cell.course_code).replace(/-T\d+$/, '');
+            if (code) codes.add(code);
+          }
+        })
+      );
+      return Array.from(codes)
+        .map((code) => ({
+          code,
+          title: entriesForSlot.find((e) => e.course_code === code)?.course_title || '',
+        }))
+        .sort((a, b) => a.code.localeCompare(b.code));
+    }
+    const seen = new Set();
+    return entriesForSlot
+      .filter((e) => {
+        if (!e.course_code || seen.has(e.course_code)) return false;
+        seen.add(e.course_code);
+        return true;
+      })
+      .map((e) => ({ code: e.course_code, title: e.course_title }));
+  }, [selectedRoomPlan, entriesForSlot]);
 
   const eligibleStudents = useMemo(() => {
     if (!selectedEntry) return [];
@@ -102,10 +183,56 @@ export default function UMCPage({
     );
   }, [selectedEntry, students]);
 
-  const reportRooms = useMemo(() => {
-    const type = selectedEntry?.is_lab ? 'lab' : 'hall';
-    return rooms.filter((r) => (r.room_type || 'hall') === type);
-  }, [rooms, selectedEntry]);
+  const roomStudents = useMemo(() => {
+    if (!selectedRoomPlan || !newReport.course_code) return eligibleStudents;
+    const seen = new Set();
+    const seated = [];
+    (selectedRoomPlan.grid || []).forEach((row) =>
+      (row || []).forEach((cell) => {
+        if (!cell?.roll_no || cell.is_buffer) return;
+        const code = String(cell.course_code || '').replace(/-T\d+$/, '');
+        if (code !== newReport.course_code || seen.has(cell.roll_no)) return;
+        seen.add(cell.roll_no);
+        const student = students.find((s) => s.roll_no === cell.roll_no);
+        seated.push({
+          roll_no: cell.roll_no,
+          name: cell.name || student?.name || '',
+          program: student?.program || '',
+          batch: student?.batch || '',
+          section: student?.section || '',
+        });
+      })
+    );
+    return seated.sort((a, b) => a.roll_no.localeCompare(b.roll_no));
+  }, [selectedRoomPlan, newReport.course_code, eligibleStudents, students]);
+
+  const invigilatorOptions = useMemo(() => {
+    const names = [];
+    const add = (name) => {
+      const clean = String(name || '').trim();
+      if (clean && !names.includes(clean)) names.push(clean);
+    };
+    if (selectedRoomPlan) {
+      (selectedRoomPlan.invigilators || []).forEach(add);
+      (selectedRoomPlan.invigilation || []).forEach((d) => add(d.instructor));
+    }
+    const entry = entriesForSlot.find((e) => e.course_code === newReport.course_code);
+    if (entry?.instructor) add(entry.instructor);
+    return names.sort();
+  }, [selectedRoomPlan, entriesForSlot, newReport.course_code]);
+
+  useEffect(() => {
+    if (!newReport.room_id) return;
+    setNewReport((curr) => {
+      if (invigilatorOptions.length === 1) {
+        return curr.invigilator === invigilatorOptions[0]
+          ? curr
+          : { ...curr, invigilator: invigilatorOptions[0] };
+      }
+      if (!curr.invigilator || invigilatorOptions.includes(curr.invigilator)) return curr;
+      return { ...curr, invigilator: '' };
+    });
+  }, [invigilatorOptions, newReport.room_id]);
 
   // Format slot label helper
   const formatSlotLabel = (slotId) => {
@@ -226,6 +353,7 @@ export default function UMCPage({
     try {
       await examOpsService.createUMCReport(newReport);
       setNewReport(EMPTY_REPORT);
+      setReportDate('');
       setPhotos([]);
       clearSignature();
       setIsAddOpen(false);
@@ -298,9 +426,6 @@ export default function UMCPage({
       <div className="itms-dash__pageHeader">
         <div>
           <h1 className="itms-dash__pageTitle">UMC &amp; Disciplinary Cases</h1>
-          <p className="itms-dash__pageSub">
-            Unfair Means Cases (UMC) incident logging, examinee statements, and ECR committee review workflow.
-          </p>
         </div>
 
         <button
@@ -308,6 +433,7 @@ export default function UMCPage({
           className="btn btn--primary"
           onClick={() => {
             setNewReport(EMPTY_REPORT);
+            setReportDate('');
             setPhotos([]);
             setIsAddOpen(true);
           }}
@@ -651,17 +777,89 @@ export default function UMCPage({
         <form onSubmit={handleCreateReport} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
             <label className="form-label">
-              Exam Slot <span style={{ color: 'var(--itms-danger)' }}>*</span>
+              Exam Day <span style={{ color: 'var(--itms-danger)' }}>*</span>
+              <select
+                className="form-control"
+                value={reportDate}
+                required
+                onChange={(e) => {
+                  setReportDate(e.target.value);
+                  setNewReport((curr) => ({
+                    ...curr,
+                    slot_id: '',
+                    room_id: '',
+                    course_code: '',
+                    roll_no: '',
+                    invigilator: '',
+                  }));
+                }}
+              >
+                <option value="">Select Day</option>
+                {reportDates.map((d, idx) => (
+                  <option key={d} value={d}>
+                    {`Day ${idx + 1} \u00b7 `}
+                    {new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', {
+                      weekday: 'short',
+                      day: 'numeric',
+                      month: 'short',
+                      year: 'numeric',
+                    })}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="form-label">
+              Session <span style={{ color: 'var(--itms-danger)' }}>*</span>
               <select
                 className="form-control"
                 value={newReport.slot_id}
                 required
-                onChange={(e) => setNewReport({ ...EMPTY_REPORT, slot_id: e.target.value })}
+                disabled={!reportDate}
+                onChange={(e) =>
+                  setNewReport((curr) => ({
+                    ...curr,
+                    slot_id: e.target.value,
+                    room_id: '',
+                    course_code: '',
+                    roll_no: '',
+                    invigilator: '',
+                  }))
+                }
               >
-                <option value="">Select Exam Slot</option>
-                {reportSlots.map((s) => (
+                <option value="">{reportDate ? 'Select Session' : 'Select Day first'}</option>
+                {sessionsForDate.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.date} ({formatTimeRange12(s.start_time, s.end_time)})
+                    {s.label ? `${s.label} \u00b7 ` : ''}
+                    {formatTimeRange12(s.start_time, s.end_time)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="form-label">
+              Hall / Lab <span style={{ color: 'var(--itms-danger)' }}>*</span>
+              <select
+                className="form-control"
+                value={newReport.room_id}
+                required
+                disabled={!newReport.slot_id}
+                onChange={(e) =>
+                  setNewReport((curr) => ({
+                    ...curr,
+                    room_id: e.target.value,
+                    course_code: '',
+                    roll_no: '',
+                    invigilator: '',
+                  }))
+                }
+              >
+                <option value="">
+                  {isPlanLoading ? 'Loading rooms...' : newReport.slot_id ? 'Select Room' : 'Select Session first'}
+                </option>
+                {roomOptions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
                   </option>
                 ))}
               </select>
@@ -673,20 +871,21 @@ export default function UMCPage({
                 className="form-control"
                 value={newReport.course_code}
                 required
-                disabled={!newReport.slot_id}
+                disabled={!newReport.room_id}
                 onChange={(e) =>
                   setNewReport((curr) => ({
                     ...curr,
                     course_code: e.target.value,
-                    room_id: '',
                     roll_no: '',
+                    invigilator: '',
                   }))
                 }
               >
-                <option value="">Select Course</option>
-                {entriesForSlot.map((entry) => (
-                  <option key={entry.unit_id || entry.course_code} value={entry.course_code}>
-                    {entry.course_code} &bull; {entry.course_title}
+                <option value="">{newReport.room_id ? 'Select Course' : 'Select Room first'}</option>
+                {roomCourses.map((course) => (
+                  <option key={course.code} value={course.code}>
+                    {course.code}
+                    {course.title ? ` \u00b7 ${course.title}` : ''}
                   </option>
                 ))}
               </select>
@@ -701,45 +900,51 @@ export default function UMCPage({
                 disabled={!newReport.course_code}
                 onChange={(e) => setNewReport((curr) => ({ ...curr, roll_no: e.target.value }))}
               >
-                <option value="">Select Student</option>
-                {eligibleStudents.map((s) => (
+                <option value="">{newReport.course_code ? 'Select Student' : 'Select Course first'}</option>
+                {roomStudents.map((s) => (
                   <option key={s.roll_no} value={s.roll_no}>
-                    {s.roll_no} — {s.name} ({s.program} {s.batch})
+                    {s.roll_no} \u2014 {s.name}
                   </option>
                 ))}
               </select>
             </label>
 
             <label className="form-label">
-              Hall / Lab <span style={{ color: 'var(--itms-danger)' }}>*</span>
-              <select
-                className="form-control"
-                value={newReport.room_id}
-                required
-                disabled={!newReport.course_code}
-                onChange={(e) => setNewReport((curr) => ({ ...curr, room_id: e.target.value }))}
-              >
-                <option value="">Select Room</option>
-                {reportRooms.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} ({r.room_type === 'lab' ? 'Lab' : 'Hall'})
-                  </option>
-                ))}
-              </select>
+              Reporting Invigilator <span style={{ color: 'var(--itms-danger)' }}>*</span>
+              {invigilatorOptions.length > 1 ? (
+                <select
+                  className="form-control"
+                  value={newReport.invigilator}
+                  required
+                  onChange={(e) => setNewReport((curr) => ({ ...curr, invigilator: e.target.value }))}
+                >
+                  <option value="">Select Invigilator</option>
+                  {invigilatorOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              ) : invigilatorOptions.length === 1 ? (
+                <input
+                  type="text"
+                  className="form-control"
+                  value={invigilatorOptions[0]}
+                  readOnly
+                  style={{ background: '#f8fafc', fontWeight: 600 }}
+                />
+              ) : (
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="Invigilator name"
+                  value={newReport.invigilator}
+                  required
+                  onChange={(e) => setNewReport((curr) => ({ ...curr, invigilator: e.target.value }))}
+                />
+              )}
             </label>
           </div>
-
-          <label className="form-label">
-            Reporting Invigilator Name <span style={{ color: 'var(--itms-danger)' }}>*</span>
-            <input
-              type="text"
-              className="form-control"
-              placeholder="e.g. Dr. Muhammad Adeel"
-              value={newReport.invigilator}
-              required
-              onChange={(e) => setNewReport({ ...newReport, invigilator: e.target.value })}
-            />
-          </label>
 
           <label className="form-label">
             Incident Description &amp; Material Recovered <span style={{ color: 'var(--itms-danger)' }}>*</span>

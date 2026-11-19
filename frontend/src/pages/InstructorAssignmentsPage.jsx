@@ -3,6 +3,12 @@ import Modal from '../components/Modal.jsx';
 import { extractErrorMessage } from '../services/apiClient.js';
 
 const PRESET_PROGRAMS = ['BSCS', 'BSIT', 'BSSE'];
+
+const DEPARTMENT_LABELS = {
+  CS: 'Computer Science (CS)',
+  IT: 'Information Technology (IT)',
+  SE: 'Software Engineering (SE)',
+};
 const PRESET_BATCHES = ['F24', 'F23', 'F22', 'F21'];
 const PRESET_SECTIONS = ['A', 'B', 'C', 'D'];
 
@@ -209,14 +215,58 @@ export default function InstructorAssignmentsPage({
     return map;
   }, [courses]);
 
+  // Department block -> batch blocks -> section blocks -> course rows.
+  const departmentOf = (program) => {
+    const key = String(program || '').toUpperCase();
+    if (key === 'BSIT') return 'IT';
+    if (key === 'BSSE') return 'SE';
+    return 'CS';
+  };
+
+  const assignmentGroups = useMemo(() => {
+    const deptMap = new Map();
+    filteredAssignments.forEach((a) => {
+      const dept = departmentOf(a.program);
+      const batch = a.batch || '—';
+      const section = a.section || '—';
+      if (!deptMap.has(dept)) deptMap.set(dept, new Map());
+      const batchMap = deptMap.get(dept);
+      if (!batchMap.has(batch)) batchMap.set(batch, new Map());
+      const sectionMap = batchMap.get(batch);
+      if (!sectionMap.has(section)) sectionMap.set(section, []);
+      sectionMap.get(section).push(a);
+    });
+    return Array.from(deptMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dept, batchMap]) => {
+        const batches = Array.from(batchMap.entries())
+          .sort(([a], [b]) => String(b).localeCompare(String(a)))
+          .map(([batch, sectionMap]) => {
+            const sections = Array.from(sectionMap.entries())
+              .sort(([a], [b]) => String(a).localeCompare(String(b)))
+              .map(([section, items]) => ({
+                section,
+                items: [...items].sort((x, y) => x.course_code.localeCompare(y.course_code)),
+              }));
+            return {
+              batch,
+              sections,
+              total: sections.reduce((sum, s) => sum + s.items.length, 0),
+            };
+          });
+        return {
+          dept,
+          batches,
+          total: batches.reduce((sum, b) => sum + b.total, 0),
+        };
+      });
+  }, [filteredAssignments]);
+
   return (
     <div className="itms-dash__main">
       <div className="itms-dash__pageHeader">
         <div>
           <h1 className="itms-dash__pageTitle">Instructor Course Assignments</h1>
-          <p className="itms-dash__pageSub">
-            Assign faculty instructors to courses by degree program, batch cohort, and section.
-          </p>
         </div>
         <div className="toolbar__actions">
           <button type="button" className="btn btn--primary" onClick={handleOpenAdd}>
@@ -314,80 +364,156 @@ export default function InstructorAssignmentsPage({
         </div>
       </div>
 
-      <div className="card-table-wrapper">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th style={{ width: '110px' }}>Program</th>
-              <th style={{ width: '90px' }}>Batch</th>
-              <th style={{ width: '100px', textAlign: 'center' }}>Section</th>
-              <th>Course Code &amp; Title</th>
-              <th>Assigned Faculty Instructor</th>
-              <th style={{ width: '130px', textAlign: 'right' }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredAssignments.map((a) => (
-              <tr key={a.id}>
-                <td>
-                  <span
-                    className={`badge ${a.program === 'BSIT' ? 'badge--info' : a.program === 'BSSE' ? 'badge--warning' : 'badge--primary'}`}
-                    style={{ fontWeight: 700 }}
-                  >
-                    {a.program}
-                  </span>
-                </td>
-                <td>
+      {assignmentGroups.length === 0 ? (
+        <div className="card-table-wrapper" style={{ padding: '2rem', textAlign: 'center', color: 'var(--itms-text-muted)' }}>
+          No instructor assignments found matching current filters.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {assignmentGroups.map((deptBlock) => (
+            <div
+              key={deptBlock.dept}
+              className="card-table-wrapper"
+              style={{ padding: '0.85rem 1.15rem' }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.75rem',
+                  flexWrap: 'wrap',
+                  marginBottom: '0.6rem',
+                  paddingBottom: '0.5rem',
+                  borderBottom: '2px solid var(--iiui-green-100, #d8ead9)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <strong style={{ color: 'var(--iiui-navy)', fontSize: '1rem' }}>
+                    Department of {DEPARTMENT_LABELS[deptBlock.dept] || deptBlock.dept}
+                  </strong>
                   <span className="badge badge--muted" style={{ fontWeight: 700 }}>
-                    {a.batch}
+                    {deptBlock.batches.length} batch{deptBlock.batches.length === 1 ? '' : 'es'}
                   </span>
-                </td>
-                <td style={{ textAlign: 'center' }}>
-                  <span className="badge badge--success" style={{ fontWeight: 700, padding: '2px 8px' }}>
-                    Sec {a.section}
-                  </span>
-                </td>
-                <td>
-                  <div>
-                    <strong style={{ color: 'var(--iiui-navy)', marginRight: '6px' }}>{a.course_code}</strong>
-                    <span style={{ color: 'var(--itms-text-muted)', fontSize: '0.85rem' }}>
-                      {courseTitleMap[a.course_code] || ''}
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <strong style={{ color: '#0f172a' }}>{a.instructor}</strong>
-                </td>
-                <td style={{ textAlign: 'right' }}>
-                  <div style={{ display: 'inline-flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn--sm btn--outline"
-                      onClick={() => handleOpenEdit(a)}
+                </div>
+                <span style={{ fontSize: '0.78rem', color: 'var(--itms-text-muted)' }}>
+                  {deptBlock.total} allocation{deptBlock.total === 1 ? '' : 's'}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+                {deptBlock.batches.map((batchBlock) => (
+                  <div key={`${deptBlock.dept}-${batchBlock.batch}`}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '0.75rem',
+                        flexWrap: 'wrap',
+                        marginBottom: '0.5rem',
+                      }}
                     >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn--sm btn--danger"
-                      onClick={() => setDeleteConfirm(a)}
-                    >
-                      Delete
-                    </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                        <strong style={{ color: 'var(--iiui-navy)', fontSize: '0.92rem' }}>
+                          Batch {batchBlock.batch}
+                        </strong>
+                        <span className="badge badge--muted" style={{ fontWeight: 700 }}>
+                          {batchBlock.sections.length} section{batchBlock.sections.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '0.76rem', color: 'var(--itms-text-muted)' }}>
+                        {batchBlock.total} allocation{batchBlock.total === 1 ? '' : 's'}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                      {batchBlock.sections.map((sectionBlock) => (
+                        <div
+                          key={`${deptBlock.dept}-${batchBlock.batch}-${sectionBlock.section}`}
+                          style={{
+                            border: '1px solid var(--itms-border)',
+                            borderRadius: 8,
+                            overflow: 'hidden',
+                            background: '#ffffff',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '0.5rem',
+                              padding: '0.45rem 0.8rem',
+                              background: 'var(--iiui-green-50)',
+                              borderBottom: '1px solid var(--itms-border)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span className="badge badge--success" style={{ fontWeight: 700, padding: '2px 8px' }}>
+                                Sec {sectionBlock.section}
+                              </span>
+                              <span style={{ fontSize: '0.78rem', color: 'var(--itms-text-secondary)' }}>
+                                {Array.from(new Set(sectionBlock.items.map((a) => a.program))).join(' · ')}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: '0.76rem', color: 'var(--itms-text-muted)' }}>
+                              {sectionBlock.items.length} course{sectionBlock.items.length === 1 ? '' : 's'}
+                            </span>
+                          </div>
+
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Course Code &amp; Title</th>
+                                <th>Assigned Faculty Instructor</th>
+                                <th style={{ width: '130px', textAlign: 'right' }}>Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sectionBlock.items.map((a) => (
+                                <tr key={a.id}>
+                                  <td>
+                                    <strong style={{ color: 'var(--iiui-navy)', marginRight: '6px' }}>{a.course_code}</strong>
+                                    <span style={{ color: 'var(--itms-text-muted)', fontSize: '0.85rem' }}>
+                                      {courseTitleMap[a.course_code] || ''}
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <strong style={{ color: '#0f172a' }}>{a.instructor}</strong>
+                                  </td>
+                                  <td style={{ textAlign: 'right' }}>
+                                    <div style={{ display: 'inline-flex', gap: '6px' }}>
+                                      <button
+                                        type="button"
+                                        className="btn btn--sm btn--outline"
+                                        onClick={() => handleOpenEdit(a)}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn btn--sm btn--danger"
+                                        onClick={() => setDeleteConfirm(a)}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </td>
-              </tr>
-            ))}
-            {filteredAssignments.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ textAlign: 'center', padding: '2rem', color: 'var(--itms-text-muted)' }}>
-                  No instructor assignments found matching current filters.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Add / Edit Instructor Assignment Modal */}
       <Modal

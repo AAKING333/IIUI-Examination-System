@@ -1,4 +1,8 @@
 """Student Roll Number Slips API and consolidated PDF generation routes."""
+import csv
+import io
+import re
+import zipfile
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
@@ -56,6 +60,74 @@ def export_student_roll_slip_pdf(roll_no: str):
         buf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="Roll_No_Slip_{clean_roll}.pdf"'},
+    )
+
+
+@router.get("/roll-slips/section-zip")
+def export_section_roll_slips_zip(
+    program: str = Query(..., description="Degree program, e.g. BSCS"),
+    batch: str = Query(..., description="Batch, e.g. F26"),
+    section: str = Query(..., description="Section, e.g. A"),
+    course_code: Optional[str] = Query(None),
+):
+    """Download every roll number slip of one section as a ZIP of individual PDFs."""
+    if not datesheet_state.get("datesheet"):
+        slots = store.get_time_slots()
+        if slots and store.get_courses():
+            generate_datesheet_schedule()
+    if datesheet_state.get("status") == "SUPERSEDED":
+        raise HTTPException(status_code=409, detail="Roll slips cannot be issued from a superseded datesheet.")
+
+    records = [
+        record for record in compile_student_exam_allocations()
+        if record["program"].lower() == program.strip().lower()
+        and record["batch"].lower() == batch.strip().lower()
+        and record["section"].lower() == section.strip().lower()
+        and record["papers"]
+        and (not course_code or any(
+            paper["course_code"].lower() == course_code.strip().lower()
+            for paper in record["papers"]
+        ))
+    ]
+    records.sort(key=lambda r: r["roll_no"])
+    if not records:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No examination allocations found for {program} {batch} Section {section}.",
+        )
+
+    issue_date = datetime.now().strftime("%d-%b-%Y")
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as bundle:
+        index_rows = [["Roll No", "Student Name", "Program", "Batch", "Section", "Papers"]]
+        used_names = set()
+        for record in records:
+            record["issue_date"] = issue_date
+            safe_roll = re.sub(r"[^A-Za-z0-9._-]+", "_", record["roll_no"]).strip("_") or "student"
+            file_name = f"Roll_No_Slip_{safe_roll}.pdf"
+            if file_name in used_names:
+                file_name = f"Roll_No_Slip_{safe_roll}_{len(used_names) + 1}.pdf"
+            used_names.add(file_name)
+            bundle.writestr(file_name, roll_slip_pdf(record).getvalue())
+            index_rows.append([
+                record["roll_no"],
+                record["name"],
+                record["program"],
+                record["batch"],
+                record["section"],
+                " | ".join(p["course_code"] for p in record["papers"]),
+            ])
+
+        index_buf = io.StringIO()
+        csv.writer(index_buf).writerows(index_rows)
+        bundle.writestr("slips_index.csv", index_buf.getvalue())
+
+    zip_buf.seek(0)
+    zip_name = f"IIUI_Roll_Slips_{program.strip().upper()}_{batch.strip().upper()}_Sec{section.strip().upper()}.zip"
+    return StreamingResponse(
+        zip_buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
     )
 
 

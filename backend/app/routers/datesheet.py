@@ -1,8 +1,10 @@
 """Datesheet Generation, Inspection, and Export routes."""
+from typing import Optional
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from database import database
+from app.routers.time_slots import get_lab_mode
 from app.services.datesheet_service import (
     generate_datesheet_schedule,
     get_datesheet_with_synced_rooms,
@@ -14,9 +16,14 @@ router = APIRouter(prefix="/api/datesheet", tags=["Datesheet Management"])
 
 
 @router.post("/generate")
-def generate_datesheet_endpoint(lab_mode: str = Query("separate_days", description="Lab scheduling mode: separate_days, separate_week, or concurrent")):
+def generate_datesheet_endpoint(
+    lab_mode: Optional[str] = Query(
+        None,
+        description="Lab scheduling mode: separate_days or concurrent. Defaults to the choice saved when slots were generated.",
+    ),
+):
     """Generates the clash-free exam schedule and synchronizes active room allocations."""
-    return generate_datesheet_schedule(lab_mode=lab_mode)
+    return generate_datesheet_schedule(lab_mode=lab_mode or get_lab_mode())
 
 
 @router.get("")
